@@ -29,10 +29,6 @@ Serve the files over HTTP or HTTPS instead of opening `index.html` directly from
 5. Use the **Action** selector to preview Idle, Walking, Sitting, attacks, casting, or any other action available in the selected job. Rotate through available directions, adjust zoom, pause animation or toggle the preview grid.
 6. Click **Export NPC sprite**, enter a filename, and choose the action checkboxes to include. All actions start selected; **Select All** and **Unselect All** update the whole list. Review any equipment availability notes, then click **Export all actions** or **Export selected actions**. At least one action must be checked. The preview's selected action does not limit the export.
 
-The import is a local file selection, not a server upload. The browser reads the GRF table and extracts individual resources as needed; it does not read the entire multi-gigabyte archive into memory. No archive or selection is saved to a server or browser storage. Reloading the page requires choosing the archive again. **Change** returns to the import step.
-
-Werewolf and Wereraptor transformations (including variants 2 and 3) include their own heads and do not display equipment. Hair and equipment controls are disabled; separate heads, headgear, costumes, and garments are omitted from preview and export. Equipment selections are retained for switching back to a job that supports them. Their available body palettes remain selectable.
-
 ## What the export contains
 
 | File | Contents |
