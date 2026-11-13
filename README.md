@@ -60,16 +60,6 @@ To install an export, keep the matching `.spr` and `.act` together in your clien
 - Only the selected archive is indexed. Resources supplied by another GRF or a loose client `data/` folder are not automatically merged.
 - The archive report lists import notes. Very large individual resources, unsafe paths, unsupported binary variants, and excessively large animation combinations are rejected with a message. Native export is limited to 10,000 referenced images and 16 million image pixels; ZIP size is limited to 128 MB. A contact sheet exceeding 8192 pixels on either axis, 32 million pixels, or the remaining ZIP budget is omitted while all native actions remain included. The JSON records any omitted sheets.
 
-## Development checks
-
-Node.js is optional and used only to run the automated checks:
-
-```sh
-npm test
-```
-
-The tests cover action discovery, animation timing, missing equipment actions, original ACT indices, and native export roundtrips. Set the `GRF_TEST_PATH` environment variable to a client archive to also run the real-archive integration check. No game assets are bundled with the tests.
-
 ## Credits and license
 
 GRF parsing, Lua mappings, sprite parsing and rendering logic are adapted from the `ragnarok-database-builder` project, copyright 2026 Manuuuu21, under its MIT license. See [LICENSE](LICENSE), [the reference project's license](js/REFERENCE-LICENSE.txt), and the notices alongside bundled dependencies in `js/vendor/`. Game assets are supplied through the selected archive and are not distributed with this app.
