@@ -1,20 +1,24 @@
 # Character Forge
 
-A local Ragnarok character editor and NPC sprite exporter. Import `data.grf`, choose a job and hair style, equip headgear and garments, preview **Idle** or **Sit**, and download one chosen pose as a native SPR/ACT package.
+A browser-based Ragnarok character editor and NPC sprite exporter. Import `data.grf`, choose a job and hair style, equip headgear and garments, preview **Idle** or **Sit**, and download one chosen pose as a native SPR/ACT package.
 
-## Run locally
+## Requirements
 
-With OpenServer running, open:
+- A modern browser with JavaScript modules, Canvas, and `DecompressionStream` support, such as Chrome or Edge.
+- A Ragnarok client `data.grf` containing character sprites and equipment resources. Game assets are not included in this repository.
+- A web server or static hosting service that serves the application over HTTP or HTTPS.
 
-<http://localhost/character-npc-generator/>
+## Installation
 
-The app is static HTML, CSS and JavaScript. It needs no PHP, database, dependency installation or build step. Alternatively, with Node.js 22 or newer:
+1. Clone this repository or download and extract its source archive.
+2. Place the application files in your web server's document directory, or upload them to a static hosting service.
+3. Preserve the directory structure, including `index.html`, `styles.css`, and the complete `js/` directory with its bundled dependencies.
+4. Open the application's address supplied by your web server or hosting service.
+5. Select your `data.grf` in the browser to enter the editor.
 
-```powershell
-npm start
-```
+The application uses static HTML, CSS, and JavaScript. No PHP backend, Node.js runtime, database, dependency installation, or build step is required to run it. All archive parsing, sprite rendering, and export generation happen in the browser.
 
-Open the printed address, normally <http://127.0.0.1:4173>. Serve the folder over HTTP; do not open `index.html` as a `file://` URL. Use a current Chrome or Edge version with `DecompressionStream` support.
+Serve the files over HTTP or HTTPS instead of opening `index.html` directly from the filesystem. The application can be hosted at a domain root or in a subdirectory; its asset paths are relative.
 
 ## Create a character
 
@@ -42,7 +46,7 @@ To install an export, keep the matching `.spr` and `.act` together in your clien
 
 ## Archive compatibility and import notes
 
-- GRF 2.0 and 3.0 are supported through the GRF reader adapted from the reference Ragnarok Database Builder. Unknown compression or custom protection is reported as an error rather than silently accepted.
+- GRF 2.0 and 3.0 are supported through the GRF reader adapted from Ragnarok Database Builder. Unknown compression or custom protection is reported as an error rather than silently accepted.
 - Korean legacy resource paths and readable or supported compiled Lua mapping tables are handled locally. The Lua reader accepts table initialization data; it does not execute arbitrary Lua programs.
 - Item names and IDs come from metadata present in the archive. When metadata is absent, a sprite resource name or view ID may be the only available label. Display names are in the archive's language; the app does not translate them.
 - Client item metadata often has no structured equipment location. Slot information can be inferred from supported description formats. Custom descriptions or missing metadata can leave a slot unknown; unclassified headgear can be placed manually in the chosen slot. Review the selected pieces in the preview.
@@ -50,24 +54,6 @@ To install an export, keep the matching `.spr` and `.act` together in your clien
 - Only the selected archive is indexed. Resources supplied by another GRF or a loose client `data/` folder are not automatically merged.
 - The archive report lists import notes. Very large individual resources, unsafe paths, unsupported binary variants, and excessively large animation combinations are rejected with a message. Native export is limited to 10,000 referenced images and 16 million image pixels; ZIP size is limited to 128 MB. A contact sheet exceeding 8192 pixels on either axis or 32 million pixels is omitted while the native pair remains available.
 
-## Verification
+## Credits and license
 
-Run the synthetic parser, composition and export checks:
-
-```powershell
-npm test
-```
-
-The tests generate their own small fixtures. No game artwork or archive is included. To also exercise a real client archive containing jobs, heads, headgear and garments:
-
-```powershell
-$env:GRF_TEST_PATH = 'C:\path\to\data.grf'
-npm test
-Remove-Item Env:GRF_TEST_PATH
-```
-
-The optional integration test indexes that archive, loads character/equipment pairs, exports Idle and Sit across all eight directions, and compares parsed output layers and image pixels against the source compositions. The default suite also checks mixed indexed/true-color images and independently validates ZIP records and checksums. Browser interaction and in-game compatibility require separate checks.
-
-## Reference and licenses
-
-GRF parsing, Lua mappings, sprite parsing and rendering logic are adapted from the user-provided `ragnarok-database-builder` project, copyright 2026 Manuuuu21, under its MIT license. See [LICENSE](LICENSE) and the notices alongside bundled dependencies in `js/vendor/`. Game assets remain in the selected archive and are not distributed with this app.
+GRF parsing, Lua mappings, sprite parsing and rendering logic are adapted from the `ragnarok-database-builder` project, copyright 2026 Manuuuu21, under its MIT license. See [LICENSE](LICENSE), [the reference project's license](js/REFERENCE-LICENSE.txt), and the notices alongside bundled dependencies in `js/vendor/`. Game assets are supplied through the selected archive and are not distributed with this app.
