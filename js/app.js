@@ -1,0 +1,419 @@
+import { openCharacterArchive, loadPair, resolveItemPair, closeCatalog } from './catalog.js';
+import { createPart, composeCharacter, drawComposition, drawPartThumbnail, supportsAction } from './sprite-engine.js';
+import { exportNpc } from './export-npc.js';
+
+const $ = id => document.getElementById(id);
+const SLOTS = [
+  ['top', 'Top headgear', 'T'], ['mid', 'Mid headgear', 'M'], ['lower', 'Lower headgear', 'L'],
+  ['costumeTop', 'Costume top', 'CT'], ['costumeMid', 'Costume mid', 'CM'], ['costumeLower', 'Costume lower', 'CL'],
+  ['garment', 'Garment', 'G'],
+];
+const DIRECTIONS = ['Front', 'Front left', 'Left', 'Back left', 'Back', 'Back right', 'Right', 'Front right'];
+const PAGE_SIZE = 24;
+const state = { catalog: null, job: null, head: null, gender: 'male', action: 'idle', direction: 0, zoom: 3,
+  slot: 'top', loadout: {}, page: 0, parts: [], composition: null, playing: !matchMedia('(prefers-reduced-motion: reduce)').matches,
+  frame: 0, lastFrame: 0, generation: 0, itemGeneration: 0, importing: false, exporting: false };
+let pairCache = new Map();
+let thumbnailObserver;
+
+function node(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+function say(message = '', error = false) {
+  $('global-message').textContent = message;
+  $('global-message').classList.toggle('error', error);
+  $('global-message').hidden = !message;
+}
+function showPreviewMessage(message = '') {
+  $('preview-message').textContent = message;
+  $('preview-message').hidden = !message;
+}
+function progressText(value) {
+  if (typeof value === 'string') return value;
+  return value?.message || value?.label || value?.phase || 'Reading archive…';
+}
+function importProgress(value) {
+  $('progress-label').textContent = progressText(value);
+  const percent = typeof value === 'object' ? (value.percent ?? (value.total ? value.done / value.total * 100 : undefined)) : undefined;
+  if (Number.isFinite(percent)) $('progress-bar').value = Math.min(100, Math.max(0, percent));
+  else $('progress-bar').removeAttribute('value');
+}
+
+async function importFile(file) {
+  if (!file || state.importing) return;
+  $('import-error').hidden = true;
+  if (!/\.(grf|gpf)$/i.test(file.name)) {
+    $('import-error').textContent = 'Choose a Ragnarok GRF archive, such as data.grf.';
+    $('import-error').hidden = false;
+    return;
+  }
+  state.importing = true;
+  $('choose-file').disabled = true;
+  $('choose-file').textContent = 'Reading your archive…';
+  $('import-progress').hidden = false;
+  importProgress('Opening ' + file.name + '…');
+  try {
+    const catalog = await openCharacterArchive(file, { onProgress: importProgress });
+    if (!catalog.jobs?.length) throw new Error('No usable character body ACT/SPR pairs were found. Choose your full client data.grf.');
+    state.catalog = catalog;
+    state.gender = catalog.jobs.some(job => job.genders?.male) ? 'male' : 'female';
+    state.job = catalog.jobs.find(job => /^(novice|초보자)$/i.test(job.name) && job.genders?.[state.gender]) || catalog.jobs.find(job => job.genders?.[state.gender]);
+    state.loadout = {};
+    state.action = 'idle';
+    state.direction = 0;
+    state.page = 0;
+    state.slot = 'top';
+    pairCache = new Map();
+    $('archive-name').textContent = file.name;
+    $('archive-name').title = file.name;
+    $('job-search').value = '';
+    $('item-search').value = '';
+    $('direction').value = '0';
+    $('import-screen').hidden = true;
+    $('editor-screen').hidden = false;
+    renderGenders(); renderJobs(); renderHeads(); renderLoadout(); renderTabs(); renderItems(); renderReport(file);
+    await updatePreview();
+    window.scrollTo({ top: 0 });
+  } catch (error) {
+    closeCatalog(state.catalog);
+    state.catalog = null;
+    state.generation++; state.itemGeneration++; state.parts = []; state.composition = null;
+    thumbnailObserver?.disconnect();
+    $('editor-screen').hidden = true; $('import-screen').hidden = false;
+    $('import-error').textContent = error.message || 'The archive could not be read.';
+    $('import-error').hidden = false;
+  } finally {
+    state.importing = false;
+    $('choose-file').disabled = false;
+    $('choose-file').textContent = 'Choose data.grf';
+    $('import-progress').hidden = true;
+    $('grf-file').value = '';
+  }
+}
+function renderGenders() {
+  document.querySelectorAll('[data-gender]').forEach(button => {
+    const chosen = state.gender === button.dataset.gender;
+    button.classList.toggle('selected', chosen);
+    button.setAttribute('aria-pressed', chosen);
+    button.disabled = !state.catalog.jobs.some(job => job.genders?.[button.dataset.gender]);
+  });
+}
+function renderJobs() {
+  const search = $('job-search').value.trim().toLowerCase();
+  const jobs = state.catalog.jobs.filter(job => job.genders?.[state.gender] && `${job.name} ${job.id} ${job.resource}`.toLowerCase().includes(search));
+  $('job-count').textContent = jobs.length;
+  const list = $('job-list'); list.replaceChildren();
+  if (!jobs.length) list.append(node('p', 'empty-state', 'No matching jobs.'));
+  for (const job of jobs) {
+    const button = node('button', 'job-option' + (job === state.job ? ' selected' : ''));
+    button.type = 'button'; button.setAttribute('aria-pressed', job === state.job);
+    button.title = `${job.name}\n${job.resource || ''}`;
+    button.append(node('span', 'job-glyph', (job.name || '?').slice(0, 1)), node('span', 'job-label', job.name), node('small', '', String(job.jobId ?? '')));
+    button.onclick = () => { state.job = job; renderJobs(); renderHeads(); renderItems(); updatePreview(); };
+    list.append(button);
+  }
+}
+function renderHeads() {
+  const heads = (state.catalog.heads || []).filter(head => head.genders?.[state.gender] && (!head.species || !state.job.species || head.species === state.job.species));
+  if (!heads.includes(state.head)) state.head = heads.find(head => Number(head.id) === 1) || heads[0] || null;
+  $('head-select').replaceChildren();
+  if (!heads.length) $('head-select').append(new Option('No separate head in archive', ''));
+  for (let i = 0; i < heads.length; i++) {
+    const head = heads[i]; const option = new Option(head.name || `Style ${head.id}`, String(i));
+    option.selected = head === state.head; $('head-select').append(option);
+  }
+  $('head-select').disabled = !heads.length;
+  $('head-select').onchange = () => { state.head = heads[Number($('head-select').value)] || null; updatePreview(); };
+}
+
+function pairFor(record) {
+  if (!record) return null;
+  // Catalogs may carry robe ACT variants for each job; use the selected body resource.
+  if (record.kind) return resolveItemPair(record, state.job, state.gender);
+  return record.genders?.[state.gender] || null;
+}
+async function parsed(record, kind) {
+  const pair = pairFor(record);
+  if (!pair) throw new Error(`${record?.name || kind} has no ${state.gender} sprite for this job.`);
+  let pending = pairCache.get(pair);
+  if (!pending) {
+    pending = loadPair(state.catalog, pair).then(bytes => createPart(bytes.spr, bytes.act));
+    pairCache.set(pair, pending);
+    if (pairCache.size > 64) pairCache.delete(pairCache.keys().next().value);
+    pending.catch(() => pairCache.delete(pair));
+  }
+  return { ...await pending, kind, id: record.id, name: record.name, resource: record.resource, topLayer: !!record.topLayer };
+}
+function visibleEquipment() {
+  const entries = [];
+  for (const [normal, costume] of [['top', 'costumeTop'], ['mid', 'costumeMid'], ['lower', 'costumeLower']]) {
+    if (state.loadout[costume]) entries.push([costume, state.loadout[costume]]);
+    else if (state.loadout[normal]) entries.push([normal, state.loadout[normal]]);
+  }
+  if (state.loadout.garment) entries.push(['garment', state.loadout.garment]);
+  const seen = new Set();
+  return entries.filter(([, item]) => {
+    const key = `${item.kind}:${item.viewId ?? item.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+async function updatePreview() {
+  const generation = ++state.generation;
+  state.composition = null; state.parts = []; state.frame = 0;
+  $('export-button').disabled = true;
+  $('sprite-canvas').hidden = true;
+  showPreviewMessage('Loading character sprites…');
+  say();
+  try {
+    const requests = [parsed(state.job, 'body')];
+    if (state.head) requests.push(parsed(state.head, 'head'));
+    for (const [slot, item] of visibleEquipment()) requests.push(parsed(item, slot));
+    const parts = await Promise.all(requests);
+    if (generation !== state.generation || !state.catalog) return;
+    state.parts = parts;
+    for (const button of document.querySelectorAll('[data-action]')) {
+      button.disabled = !supportsAction(parts, button.dataset.action);
+      button.classList.toggle('selected', button.dataset.action === state.action);
+      button.setAttribute('aria-pressed', button.dataset.action === state.action);
+    }
+    renderComposition();
+  } catch (error) {
+    if (generation !== state.generation) return;
+    showPreviewMessage(error.message || 'This character could not be rendered.');
+    say('The selected sprite could not be loaded. Try another job or remove the affected equipment. ' + error.message, true);
+  }
+}
+function renderComposition() {
+  state.composition = null;
+  $('export-button').disabled = true;
+  try {
+    const composition = composeCharacter(state.parts, { action: state.action, direction: state.direction });
+    state.composition = composition; state.frame = 0; state.lastFrame = performance.now();
+    $('character-name').textContent = state.job.name;
+    $('character-details').textContent = `${state.gender === 'male' ? 'Male' : 'Female'} · ${state.action === 'idle' ? 'Idle' : 'Sit'} · ${DIRECTIONS[state.direction]}`;
+    $('pose-caption').textContent = state.action.toUpperCase();
+    $('sprite-canvas').setAttribute('aria-label', `${state.job.name}, ${state.gender}, ${state.action}, facing ${DIRECTIONS[state.direction]}`);
+    $('sprite-canvas').hidden = false;
+    showPreviewMessage();
+    drawFrame();
+    $('export-button').disabled = false;
+  } catch (error) {
+    state.composition = null;
+    $('sprite-canvas').hidden = true;
+    showPreviewMessage(error.message || 'This pose is unavailable.');
+  }
+  updatePlaybackButton();
+}
+function drawFrame() {
+  if (!state.composition) return;
+  drawComposition($('sprite-canvas'), state.composition, { frameIndex: state.frame, scale: state.zoom });
+  $('zoom-value').textContent = `${state.zoom}×`;
+  $('frame-info').textContent = `Frame ${state.frame + 1} / ${state.composition.frames.length}`;
+}
+function animationLoop(now) {
+  requestAnimationFrame(animationLoop);
+  if (!document.hidden && state.composition && state.playing && !state.exporting && !state.importing) {
+    const delay = Math.max(1, state.composition.delay || 150);
+    if (now - state.lastFrame >= delay) {
+      state.frame = (state.frame + Math.max(1, Math.floor((now - state.lastFrame) / delay))) % state.composition.frames.length;
+      state.lastFrame = now;
+      try { drawFrame(); } catch (error) { state.composition = null; $('export-button').disabled = true; showPreviewMessage(error.message); }
+    }
+  }
+}
+function updatePlaybackButton() {
+  $('play-toggle').replaceChildren(document.createTextNode(state.playing ? 'Ⅱ ' : '▷ '), node('span', '', state.playing ? 'Pause' : 'Play'));
+  $('play-toggle').setAttribute('aria-label', state.playing ? 'Pause animation' : 'Play animation');
+}
+
+function renderTabs() {
+  $('slot-tabs').replaceChildren();
+  for (const [id, label] of SLOTS) {
+    const button = node('button', 'slot-tab' + (state.slot === id ? ' selected' : ''), label);
+    button.setAttribute('aria-pressed', state.slot === id);
+    button.onclick = () => { state.slot = id; state.page = 0; renderTabs(); renderItems(); };
+    $('slot-tabs').append(button);
+  }
+}
+function renderLoadout() {
+  $('loadout-list').replaceChildren();
+  for (const [slot, label, short] of SLOTS) {
+    const item = state.loadout[slot];
+    const row = node('div', 'loadout-row' + (item ? ' equipped' : ''));
+    const text = node('button', 'loadout-text');
+    text.append(node('strong', '', label), node('span', '', item ? item.name : 'Nothing equipped'));
+    text.title = item ? item.name : label;
+    text.onclick = () => { state.slot = slot; state.page = 0; renderTabs(); renderItems(); };
+    row.append(node('span', 'slot-indicator', short), text);
+    if (item) {
+      const remove = node('button', 'remove-item', '×');
+      remove.setAttribute('aria-label', `Remove ${label}`);
+      remove.onclick = () => { delete state.loadout[slot]; renderLoadout(); renderItems(); updatePreview(); };
+      row.append(remove);
+    }
+    $('loadout-list').append(row);
+  }
+  $('clear-loadout').disabled = !Object.keys(state.loadout).length;
+}
+function slotMatches(item) {
+  if (state.slot === 'garment') return item.kind === 'garment';
+  if (item.kind !== 'headgear') return false;
+  if (item.costume === true && !state.slot.startsWith('costume')) return false;
+  if (item.costume === false && state.slot.startsWith('costume')) return false;
+  // Client GRFs commonly omit server equip masks. Unclassified items stay available for manual placement.
+  if (!item.slots?.length) return true;
+  return item.slots.includes(state.slot) || item.slots.includes(state.slot.replace(/^costume/, '').toLowerCase()) || item.slots.includes('unknown');
+}
+function renderItems() {
+  if (!state.catalog) return;
+  const generation = ++state.itemGeneration;
+  thumbnailObserver?.disconnect();
+  const search = $('item-search').value.trim().toLowerCase();
+  const all = state.catalog.items.filter(item => slotMatches(item) && pairFor(item) && `${item.name} ${item.id ?? ''} ${item.viewId ?? ''} ${item.resource ?? ''}`.toLowerCase().includes(search));
+  const pages = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
+  state.page = Math.min(Math.max(0, state.page), pages - 1);
+  $('item-count').textContent = `${all.length.toLocaleString()} ${all.length === 1 ? 'piece' : 'pieces'}`;
+  $('slot-help').textContent = all.some(item => item.slotKnown === false || !item.slots?.length || item.slots.includes('unknown')) && state.slot !== 'garment' ? 'Unclassified pieces can be placed manually' : 'Select a piece to equip it';
+  $('page-info').textContent = `Page ${state.page + 1} of ${pages.toLocaleString()}`;
+  $('previous-page').disabled = state.page === 0;
+  $('next-page').disabled = state.page >= pages - 1;
+  const grid = $('item-grid'); grid.replaceChildren();
+  if (!all.length) grid.append(node('div', 'empty-state', 'No matching pieces for this character. Try another search, slot or gender.'));
+  const queue = []; let running = 0;
+  async function pump() {
+    if (generation !== state.itemGeneration) return;
+    while (running < 2 && queue.length) {
+      const { item, art } = queue.shift(); running++;
+      (async () => {
+        try {
+          const part = await parsed(item, item.kind);
+          if (generation !== state.itemGeneration) return;
+          const canvas = node('canvas'); canvas.setAttribute('aria-hidden', 'true');
+          drawPartThumbnail(canvas, part, { size: 64 }); art.replaceChildren(canvas);
+        } catch { art.title = 'Preview unavailable. Select this item to see the detailed error.'; art.replaceChildren(node('span', 'item-placeholder', '—')); }
+        finally { running--; pump(); }
+      })();
+    }
+  }
+  const artItems = new Map();
+  thumbnailObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) {
+      thumbnailObserver.unobserve(entry.target);
+      queue.push({ item: artItems.get(entry.target), art: entry.target });
+    }
+    pump();
+  }, { rootMargin: '100px' });
+  for (const item of all.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE)) {
+    const selected = state.loadout[state.slot] === item;
+    const card = node('button', 'item-card' + (selected ? ' selected' : ''));
+    card.setAttribute('aria-pressed', selected);
+    const idLabel = Number.isFinite(item.id) ? `ID ${item.id}` : `View ${item.viewId ?? '—'}`;
+    card.title = `${item.name}\n${idLabel} · View ${item.viewId ?? '—'}`;
+    const art = node('span', 'item-art'); art.append(node('span', 'item-placeholder', '✦'));
+    const label = node('span', 'item-label'); label.append(node('strong', '', item.name), node('small', '', idLabel));
+    card.append(art, label);
+    card.onclick = () => {
+      if (state.loadout[state.slot] === item) delete state.loadout[state.slot];
+      else state.loadout[state.slot] = item;
+      renderLoadout(); renderItems(); updatePreview();
+    };
+    grid.append(card); artItems.set(art, item); thumbnailObserver.observe(art);
+  }
+}
+function renderReport(file) {
+  const content = $('report-content'); content.replaceChildren();
+  content.append(node('p', '', `${file.name} · ${(file.size / 1024 ** 3).toFixed(2)} GB · ${state.catalog.jobs.length} jobs · ${state.catalog.heads?.length || 0} hairstyles · ${state.catalog.items.length.toLocaleString()} equipment entries.`));
+  content.append(node('p', '', 'The archive stays on this device and is read as needed. Reloading the page requires selecting it again. Items without a known equip position can be placed in a headgear slot manually. Item IDs and view IDs are different; both can be searched when the archive supplies their mapping.'));
+  const problems = state.catalog.problems || [];
+  if (problems.length) {
+    const list = node('ul');
+    for (const problem of problems.slice(0, 100)) list.append(node('li', '', typeof problem === 'string' ? problem : problem.message || JSON.stringify(problem)));
+    if (problems.length > 100) list.append(node('li', '', `${problems.length - 100} additional notes omitted.`));
+    content.append(list);
+  }
+}
+
+function changeDirection(value) { state.direction = (value + 8) % 8; $('direction').value = String(state.direction); if (state.parts.length) renderComposition(); }
+function changeZoom(delta) {
+  const previous = state.zoom;
+  state.zoom = Math.min(8, Math.max(1, state.zoom + delta));
+  try { drawFrame(); } catch (error) { state.zoom = previous; drawFrame(); say(error.message, true); }
+}
+function openExport() {
+  if (!state.parts.length || !state.composition) return;
+  $('export-name').value = `${state.job.name}_${state.gender}`.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').slice(0, 54) || 'my_npc';
+  $('export-action').value = state.action;
+  for (const option of $('export-action').options) option.disabled = !supportsAction(state.parts, option.value);
+  $('export-status').hidden = true;
+  $('export-dialog').showModal();
+}
+async function downloadExport(event) {
+  event.preventDefault();
+  if (state.exporting || !state.parts.length) return;
+  state.exporting = true;
+  $('download-export').disabled = true; $('close-export').disabled = true;
+  $('export-name').disabled = true; $('export-action').disabled = true;
+  $('export-status').hidden = false;
+  $('export-status').textContent = 'Preparing your NPC…';
+  try {
+    const action = $('export-action').value;
+    const result = await exportNpc(state.parts, { action, name: $('export-name').value, metadata: {
+      archive: $('archive-name').textContent, job: state.job.name, jobId: state.job.jobId, jobResource: state.job.resource, gender: state.gender,
+      hairstyle: state.head?.id ?? null,
+      equipment: Object.fromEntries(Object.entries(state.loadout).map(([slot, item]) => [slot, { id: item.id, viewId: item.viewId, name: item.name }])),
+    } }, value => { $('export-status').textContent = progressText(value); });
+    const url = URL.createObjectURL(result.blob);
+    const link = node('a'); link.href = url; link.download = result.filename; document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    $('export-status').textContent = `Ready! ${result.filename} was sent to your downloads. Contains only ${action === 'idle' ? 'Idle' : 'Sit'} in all eight directions.`;
+    say(`Exported ${result.filename}. The ZIP includes the SPR/ACT pair and installation notes.`);
+  } catch (error) { $('export-status').textContent = 'Export failed: ' + error.message; }
+  finally { state.exporting = false; $('download-export').disabled = false; $('close-export').disabled = false; $('export-name').disabled = false; $('export-action').disabled = false; }
+}
+
+$('choose-file').onclick = () => $('grf-file').click();
+$('grf-file').onchange = () => importFile($('grf-file').files[0]);
+for (const type of ['dragenter', 'dragover']) $('drop-zone').addEventListener(type, event => { event.preventDefault(); if (!state.importing) $('drop-zone').classList.add('dragover'); });
+$('drop-zone').addEventListener('dragleave', event => { if (!$('drop-zone').contains(event.relatedTarget)) $('drop-zone').classList.remove('dragover'); });
+$('drop-zone').addEventListener('drop', event => { event.preventDefault(); $('drop-zone').classList.remove('dragover'); if (event.dataTransfer.files.length !== 1) { $('import-error').textContent = 'Please select one data.grf archive at a time.'; $('import-error').hidden = false; return; } importFile(event.dataTransfer.files[0]); });
+// Prevent the browser from navigating away when a file is dropped outside the target.
+window.addEventListener('dragover', event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); });
+window.addEventListener('drop', event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); });
+$('change-archive').onclick = () => {
+  state.generation++; state.itemGeneration++; thumbnailObserver?.disconnect();
+  closeCatalog(state.catalog); state.catalog = null; state.parts = []; state.composition = null; pairCache = new Map();
+  state.job = null; state.head = null; state.loadout = {};
+  $('editor-screen').hidden = true; $('import-screen').hidden = false; $('import-error').hidden = true;
+  window.scrollTo({ top: 0 }); $('choose-file').focus();
+};
+$('job-search').oninput = renderJobs;
+$('item-search').oninput = () => { state.page = 0; renderItems(); };
+document.querySelectorAll('[data-gender]').forEach(button => button.onclick = () => {
+  state.gender = button.dataset.gender;
+  if (!state.job.genders?.[state.gender]) state.job = state.catalog.jobs.find(job => job.genders?.[state.gender]);
+  for (const slot of Object.keys(state.loadout)) if (!pairFor(state.loadout[slot])) delete state.loadout[slot];
+  renderGenders(); renderJobs(); renderHeads(); renderItems(); renderLoadout(); updatePreview();
+});
+document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => {
+  state.action = button.dataset.action;
+  document.querySelectorAll('[data-action]').forEach(item => { item.classList.toggle('selected', item === button); item.setAttribute('aria-pressed', item === button); });
+  renderComposition();
+});
+$('direction').onchange = () => changeDirection(Number($('direction').value));
+$('rotate-left').onclick = () => changeDirection(state.direction - 1);
+$('rotate-right').onclick = () => changeDirection(state.direction + 1);
+$('zoom-out').onclick = () => changeZoom(-1); $('zoom-in').onclick = () => changeZoom(1);
+$('play-toggle').onclick = () => { state.playing = !state.playing; state.lastFrame = performance.now(); updatePlaybackButton(); };
+$('grid-toggle').onchange = () => $('preview-stage').classList.toggle('no-grid', !$('grid-toggle').checked);
+$('clear-loadout').onclick = () => { state.loadout = {}; renderLoadout(); renderItems(); updatePreview(); };
+$('previous-page').onclick = () => { state.page--; renderItems(); };
+$('next-page').onclick = () => { state.page++; renderItems(); };
+$('export-button').onclick = openExport;
+$('close-export').onclick = () => $('export-dialog').close();
+$('export-dialog').addEventListener('cancel', event => { if (state.exporting) event.preventDefault(); });
+$('export-form').onsubmit = downloadExport;
+requestAnimationFrame(animationLoop);

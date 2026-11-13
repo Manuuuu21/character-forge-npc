@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#234e43">
+  <meta name="description" content="Build Ragnarok characters from your data.grf and export a single-action NPC sprite.">
+  <title>Character Forge · Ragnarok NPC Studio</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23234e43'/%3E%3Cpath d='M9 8h14v5H14v3h7v5h-7v5H9z' fill='%23e9eab8'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <svg class="svg-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H5v20h14V7zM14 2v5h5M8 12h8M8 16h6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 2 8M3 3v7h7"/></symbol>
+  </defs></svg>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="Character Forge home"><span class="brand-mark">F<span>✦</span></span><span>Character Forge<small>RAGNAROK NPC STUDIO</small></span></a>
+    <span class="local-badge"><span></span> Your files stay local</span>
+  </header>
+
+  <main id="import-screen" class="import-screen">
+    <div class="eyebrow"><span class="step-number">01</span> YOUR ARCHIVE. YOUR CHARACTERS.</div>
+    <h1>A new character<br>starts here.</h1>
+    <p class="intro">Bring your Ragnarok world into the studio.<br>Load your <strong>data.grf</strong> to start creating.</p>
+    <div id="drop-zone" class="drop-zone">
+      <div class="archive-art" aria-hidden="true"><svg><use href="#i-file"/></svg><span>.GRF</span><i>+</i></div>
+      <h2>Drop your data.grf here</h2>
+      <p>or choose the archive from your client folder</p>
+      <button id="choose-file" class="button primary"><svg><use href="#i-upload"/></svg>Choose data.grf</button>
+      <input id="grf-file" type="file" accept=".grf,.gpf" hidden>
+      <div id="import-progress" class="import-progress" hidden><progress id="progress-bar" max="100"></progress><span id="progress-label" role="status">Reading archive…</span></div>
+      <p id="import-error" class="error-text" role="alert" hidden></p>
+      <div class="drop-foot">GRF 2.0 & 3.0 <span>·</span> Large archives supported</div>
+    </div>
+    <div class="import-features"><span><b>01</b> Pick a job</span><span><b>02</b> Build your look</span><span><b>03</b> Export an NPC</span></div>
+    <p class="privacy-note">Read directly in your browser. No account, no server upload.</p>
+  </main>
+
+  <main id="editor-screen" class="editor" hidden>
+    <div class="editor-heading"><div><div class="eyebrow">THE CHARACTER WORKSHOP</div><h1>Make it your own.</h1></div><div class="heading-actions"><button id="change-archive" class="button quiet"><svg><use href="#i-file"/></svg><span id="archive-name">data.grf</span><span class="change-label">Change</span></button><button id="export-button" class="button primary" disabled><svg><use href="#i-export"/></svg>Export NPC sprite</button></div></div>
+    <div id="global-message" class="message" role="status" hidden></div>
+    <div class="workspace">
+      <section class="panel jobs-panel" aria-labelledby="jobs-title">
+        <div class="panel-heading"><h2 id="jobs-title">Job sprites</h2><span id="job-count" class="count">0</span></div>
+        <label class="search-field compact"><svg><use href="#i-search"/></svg><input id="job-search" type="search" placeholder="Find a job…" aria-label="Search job sprites"></label>
+        <div class="gender-switch" aria-label="Character gender"><button data-gender="male" class="selected" aria-pressed="true">Male</button><button data-gender="female" aria-pressed="false">Female</button></div>
+        <div id="job-list" class="job-list" aria-label="Jobs"></div>
+        <div class="hair-field"><label for="head-select">Hair style</label><select id="head-select"></select></div>
+      </section>
+      <section class="panel viewer-panel" aria-labelledby="viewer-title">
+        <div class="panel-heading"><div class="viewer-title"><h2 id="viewer-title">Sprite preview</h2><span class="live-dot" title="Rendered from your archive"></span></div><div class="segmented" aria-label="Action"><button data-action="idle" class="selected" aria-pressed="true">Idle</button><button data-action="sit" aria-pressed="false">Sit</button></div></div>
+        <div id="preview-stage" class="preview-stage">
+          <span class="stage-caption">LIVE PREVIEW <span> / </span> <span id="pose-caption">IDLE</span></span>
+          <div class="crosshair" aria-hidden="true"></div>
+          <canvas id="sprite-canvas" width="1" height="1" role="img" aria-label="Character sprite preview"></canvas>
+          <div id="preview-message" class="preview-message" role="status">Choose a job to begin</div>
+          <div class="stage-name"><strong id="character-name">Character</strong><span id="character-details">Male · Idle · Front</span></div>
+          <div class="zoom-control"><button id="zoom-out" aria-label="Zoom out">−</button><span id="zoom-value">3×</span><button id="zoom-in" aria-label="Zoom in">+</button></div>
+        </div>
+        <div class="viewer-toolbar"><div class="rotation-controls"><button id="rotate-left" class="icon-button" aria-label="Rotate left"><svg class="flip"><use href="#i-chevron"/></svg></button><label for="direction" class="sr-only">Facing direction</label><select id="direction"><option value="0">Front</option><option value="1">Front left</option><option value="2">Left</option><option value="3">Back left</option><option value="4">Back</option><option value="5">Back right</option><option value="6">Right</option><option value="7">Front right</option></select><button id="rotate-right" class="icon-button" aria-label="Rotate right"><svg><use href="#i-chevron"/></svg></button></div><div class="playback"><button id="play-toggle" class="text-button" aria-label="Pause animation">Ⅱ <span>Pause</span></button><span id="frame-info">Frame 1 / 1</span></div><label class="grid-control"><input id="grid-toggle" type="checkbox" checked> Grid</label></div>
+      </section>
+      <aside class="panel loadout-panel" aria-labelledby="loadout-title"><div class="panel-heading"><h2 id="loadout-title">Your loadout</h2><button id="clear-loadout" class="icon-button" aria-label="Clear equipment" title="Clear equipment"><svg><use href="#i-reset"/></svg></button></div><div id="loadout-list"></div><div class="loadout-note"><span>✦</span><p>Costume pieces replace their matching headgear in the preview.</p></div><div class="export-note"><strong>One pose. Eight directions.</strong><span>Export the selected action as a ready-to-use SPR + ACT pair.</span></div></aside>
+    </div>
+    <section class="panel equipment-panel" aria-labelledby="equipment-title">
+      <div class="equipment-heading"><div><h2 id="equipment-title">The finishing touches</h2><p>Choose a slot, then add a piece to your character.</p></div><label class="search-field"><svg><use href="#i-search"/></svg><input id="item-search" type="search" placeholder="Search by name, item ID or view ID…" aria-label="Search equipment by name or ID"></label></div>
+      <div id="slot-tabs" class="slot-tabs" aria-label="Equipment slot"></div>
+      <div class="results-heading"><span id="item-count">0 pieces</span><span id="slot-help">Select a piece to equip it</span></div>
+      <div id="item-grid" class="item-grid"></div>
+      <div class="pagination"><button id="previous-page" class="button quiet" disabled>Previous</button><span id="page-info">Page 1 of 1</span><button id="next-page" class="button quiet" disabled>Next</button></div>
+    </section>
+    <details id="archive-report" class="archive-report"><summary>Archive details & import notes</summary><div id="report-content"></div></details>
+  </main>
+  <footer class="site-footer"><span>CHARACTER FORGE</span><span>Made for the worlds you create.</span><span>LOCAL SPRITE WORKSPACE <b>✦</b></span></footer>
+  <dialog id="export-dialog"><form id="export-form"><div class="dialog-heading"><div class="eyebrow">READY FOR YOUR WORLD</div><button type="button" id="close-export" class="icon-button" aria-label="Close export">×</button></div><h2>Export your NPC.</h2><p>One action, all eight directions. Your equipped pieces are combined into one sprite.</p><label for="export-name">Sprite filename</label><input id="export-name" value="my_npc" maxlength="64" pattern="[A-Za-z0-9_-]+" required aria-describedby="filename-hint"><small id="filename-hint">Letters, numbers, underscores and hyphens.</small><label for="export-action">Action to export</label><select id="export-action"><option value="idle">Idle — standing</option><option value="sit">Sit — seated</option></select><div class="export-contents"><svg><use href="#i-file"/></svg><div><strong>NPC sprite package .zip</strong><span>SPR + ACT · selection metadata · installation notes</span></div></div><p id="export-status" role="status" hidden></p><button id="download-export" type="submit" class="button primary"><svg><use href="#i-export"/></svg>Build & download ZIP</button></form></dialog>
+  <noscript><p class="noscript">Enable JavaScript to read your GRF and use the character studio.</p></noscript>
+</body>
+</html>
