@@ -376,31 +376,62 @@ function changeZoom(delta) {
   state.zoom = Math.min(8, Math.max(1, state.zoom + delta));
   try { drawFrame(); } catch (error) { state.zoom = previous; drawFrame(); say(error.message, true); }
 }
+function selectedExportActions() {
+  const checked = new Set([...$('export-action-list').querySelectorAll('input:checked')].map(input => input.value));
+  return state.actions.filter(action => action.directions.length && checked.has(action.id));
+}
+function updateExportSelection() {
+  const available = state.actions.filter(action => action.directions.length);
+  const selected = selectedExportActions();
+  const allSelected = selected.length === available.length && selected.length > 0;
+  $('export-action-count').textContent = allSelected
+    ? `All ${available.length} job actions selected`
+    : `${selected.length} of ${available.length} job actions selected`;
+  $('select-all-actions').disabled = allSelected || !available.length;
+  $('unselect-all-actions').disabled = !selected.length;
+  $('export-selection-hint').hidden = selected.length > 0;
+  $('download-export').disabled = state.exporting || !selected.length;
+  $('export-submit-label').textContent = allSelected ? 'Export all actions' : 'Export selected actions';
+  const warnings = [...new Set(selected.flatMap(action => action.warnings || []))];
+  $('export-warnings').hidden = !warnings.length;
+  $('export-warning-summary').textContent = `Missing equipment actions (${warnings.length})`;
+  $('export-warning-list').replaceChildren(...warnings.slice(0, 80).map(warning => node('li', '', warning)));
+  if (warnings.length > 80) $('export-warning-list').append(node('li', '', `${warnings.length - 80} more notes will be included in the export metadata.`));
+}
+function selectAllExportActions(checked) {
+  for (const input of $('export-action-list').querySelectorAll('input')) input.checked = checked;
+  $('export-status').hidden = true;
+  updateExportSelection();
+}
 function openExport() {
   if (!state.parts.length || !state.composition) return;
   $('export-name').value = `${state.job.name}_${state.gender}`.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').slice(0, 54) || 'my_npc';
   const available = state.actions.filter(action => action.directions.length);
-  $('export-action-count').textContent = `All ${available.length} job actions included`;
-  $('export-action-list').replaceChildren(...available.map(action => node('span', '', action.label)));
-  const warnings = [...new Set(state.actions.flatMap(action => action.warnings || []))];
-  $('export-warnings').hidden = !warnings.length;
+  $('export-action-list').replaceChildren(...available.map(action => {
+    const label = node('label');
+    const input = node('input');
+    input.type = 'checkbox'; input.name = 'export-actions'; input.value = action.id; input.checked = true;
+    label.append(input, node('span', '', action.label));
+    return label;
+  }));
   $('export-warnings').open = false;
-  $('export-warning-summary').textContent = `Missing equipment actions (${warnings.length})`;
-  $('export-warning-list').replaceChildren(...warnings.slice(0, 80).map(warning => node('li', '', warning)));
-  if (warnings.length > 80) $('export-warning-list').append(node('li', '', `${warnings.length - 80} more notes will be included in the export metadata.`));
   $('export-status').hidden = true;
+  updateExportSelection();
   $('export-dialog').showModal();
 }
 async function downloadExport(event) {
   event.preventDefault();
   if (state.exporting || !state.parts.length) return;
+  const actionIds = selectedExportActions().map(action => action.id);
+  if (!actionIds.length) { updateExportSelection(); return; }
   state.exporting = true;
   $('download-export').disabled = true; $('close-export').disabled = true;
   $('export-name').disabled = true;
+  $('export-action-selection').disabled = true;
   $('export-status').hidden = false;
   $('export-status').textContent = 'Preparing your NPC…';
   try {
-    const result = await exportNpc(state.parts, { name: $('export-name').value, metadata: {
+    const result = await exportNpc(state.parts, { name: $('export-name').value, actionIds, metadata: {
       archive: $('archive-name').textContent, job: state.job.name, jobId: state.job.jobId, jobResource: state.job.resource, gender: state.gender,
       hairstyle: state.head?.id ?? null,
       equipment: Object.fromEntries(Object.entries(state.loadout).map(([slot, item]) => [slot, { id: item.id, viewId: item.viewId, name: item.name }])),
@@ -408,11 +439,15 @@ async function downloadExport(event) {
     const url = URL.createObjectURL(result.blob);
     const link = node('a'); link.href = url; link.download = result.filename; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    $('export-status').textContent = `Ready! ${result.filename} was sent to your downloads with the full job animation set (${result.summary.actionCount} directional actions).`;
+    $('export-status').textContent = `Ready! ${result.filename} was sent to your downloads with ${actionIds.length} selected job action${actionIds.length === 1 ? '' : 's'} (${result.summary.selectedActionCount ?? result.summary.actionCount} directional actions).`;
     const warningCount = result.summary.warnings?.length || 0;
-    say(`Exported ${result.filename} with all job actions.${warningCount ? ' Review the included notes for unavailable equipment actions and omitted preview sheets.' : ''}`);
+    say(`Exported ${result.filename} with ${actionIds.length} selected job action${actionIds.length === 1 ? '' : 's'}.${warningCount ? ' Review the included notes for unavailable equipment actions and omitted preview sheets.' : ''}`);
   } catch (error) { $('export-status').textContent = 'Export failed: ' + error.message; }
-  finally { state.exporting = false; $('download-export').disabled = false; $('close-export').disabled = false; $('export-name').disabled = false; }
+  finally {
+    state.exporting = false;
+    $('close-export').disabled = false; $('export-name').disabled = false; $('export-action-selection').disabled = false;
+    updateExportSelection();
+  }
 }
 
 $('choose-file').onclick = () => $('grf-file').click();
@@ -453,6 +488,9 @@ $('clear-loadout').onclick = () => { state.loadout = {}; renderLoadout(); render
 $('previous-page').onclick = () => { state.page--; renderItems(); };
 $('next-page').onclick = () => { state.page++; renderItems(); };
 $('export-button').onclick = openExport;
+$('select-all-actions').onclick = () => selectAllExportActions(true);
+$('unselect-all-actions').onclick = () => selectAllExportActions(false);
+$('export-action-list').onchange = () => { $('export-status').hidden = true; updateExportSelection(); };
 $('close-export').onclick = () => $('export-dialog').close();
 $('export-dialog').addEventListener('cancel', event => { if (state.exporting) event.preventDefault(); });
 $('export-form').onsubmit = downloadExport;

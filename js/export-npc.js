@@ -27,15 +27,33 @@ function sourceActionCount(parts) {
   return count;
 }
 
-// Preserve every original ACT slot, including empty slots and a partial final
-// group. Preview selection must never reduce or renumber the exported actions.
-export function buildNpcBinary(parts) {
+function exportSelection(parts, actionIds) {
+  const count = sourceActionCount(parts), groups = enumerateActions(parts);
+  const available = groups.filter(group => group.directions.length);
+  if (actionIds !== undefined && (!Array.isArray(actionIds) || !actionIds.length)) throw new Error('Select at least one job action to export.');
+  const selected = new Set(actionIds === undefined ? available.map(group => group.id) : actionIds);
+  if ([...selected].some(id => !available.some(group => group.id === id))) throw new Error('Choose actions available in the selected job.');
+  const all = available.every(group => selected.has(group.id));
+  const selectedGroups = all ? groups : groups.filter(group => selected.has(group.id));
+  const indices = new Set(selectedGroups.flatMap(group => Array.from({ length: Math.min(8, count - group.base) }, (_, direction) => group.base + direction)));
+  return { count, groups: selectedGroups, indices, all };
+}
+
+// Keep original ACT indices, including partial final groups. Unselected groups
+// have empty slots so selecting a later action never changes its meaning.
+export function buildNpcBinary(parts, { actionIds } = {}) {
+  const selection = exportSelection(parts, actionIds);
   const compositions = [], totals = { frames: 0, layers: 0 };
-  for (let actionIndex = 0; actionIndex < sourceActionCount(parts); actionIndex++) collectComposition(parts, actionIndex, compositions, totals);
+  for (let actionIndex = 0; actionIndex < selection.count; actionIndex++) collectComposition(parts, actionIndex, compositions, totals, selection.indices.has(actionIndex));
   return assembleBinary(parts, compositions);
 }
 
-function collectComposition(parts, actionIndex, compositions, totals) {
+function collectComposition(parts, actionIndex, compositions, totals, selected = true) {
+  if (!selected) {
+    const source = parts.find(part => part.kind === 'body').act.actions[actionIndex];
+    compositions.push({ actionIndex, direction: actionIndex % 8, frames: [], delay: Math.max(1, source?.delay || 96), empty: true, warnings: [] });
+    return;
+  }
   const composition = composeAction(parts, { actionIndex, allowEmpty: true });
   totals.frames += composition.frames.length;
   for (const frame of composition.frames) for (const layers of frame) totals.layers += layers.length;
@@ -169,8 +187,8 @@ async function previewSheet(compositions) {
   } finally { canvas.width = 1; canvas.height = 1; frameCanvas.width = 1; frameCanvas.height = 1; }
 }
 
-function groupManifest(parts, binary) {
-  return enumerateActions(parts).map(group => {
+function groupManifest(groups, binary) {
+  return groups.map(group => {
     const count = Math.min(8, binary.actions.length - group.base);
     const indices = Array.from({ length: count }, (_, direction) => group.base + direction);
     return {
@@ -189,10 +207,10 @@ function exportReadme(basename, manifest) {
     : '';
   return `NPC CHARACTER SPRITE EXPORT
 
-${basename}: all job actions
+${basename}: ${manifest.action === 'all' ? 'all' : 'selected'} job actions
 
 The .spr and .act files share a basename and must stay together.
-All ${manifest.actionCount} original job ACT slots are included in their original order. Empty source slots remain empty; action groups are not renumbered.
+All ${manifest.actionCount} original job ACT slots retain their original order. ${manifest.action === 'all' ? 'Empty source slots remain empty.' : 'Unselected action slots are empty; only selected actions contain animation data.'} Action groups are not renumbered.
 Each group uses the direction order: ${DIRECTIONS.join(', ')}.
 
 ACTION GROUPS
@@ -212,22 +230,26 @@ No game data or server configuration was changed by this export.
 `;
 }
 
-export async function exportNpc(parts, { name = 'custom_npc', metadata = {} } = {}, onProgress = () => {}) {
-  const basename = safeName(name), count = sourceActionCount(parts), compositions = [], totals = { frames: 0, layers: 0 };
+export async function exportNpc(parts, { name = 'custom_npc', metadata = {}, actionIds } = {}, onProgress = () => {}) {
+  const selection = exportSelection(parts, actionIds);
+  const basename = safeName(name), count = selection.count, compositions = [], totals = { frames: 0, layers: 0 };
   for (let actionIndex = 0; actionIndex < count; actionIndex++) {
     if (actionIndex % 8 === 0) {
-      onProgress(`Combining all job actions… ${actionIndex} / ${count}`);
+      onProgress(`Combining ${selection.all ? 'all' : 'selected'} job actions… ${actionIndex} / ${count}`);
       await yieldUI();
     }
-    collectComposition(parts, actionIndex, compositions, totals);
+    collectComposition(parts, actionIndex, compositions, totals, selection.indices.has(actionIndex));
   }
-  onProgress('Encoding the complete SPR/ACT pair…');
+  onProgress('Encoding the SPR/ACT pair…');
   await yieldUI();
   const binary = assembleBinary(parts, compositions);
   const manifest = {
     ...metadata,
-    version: 2, name: basename, action: 'all', directionOrder: DIRECTIONS, actVersion: '2.5', sprVersion: '2.0', actionCount: binary.actions.length,
-    groups: groupManifest(parts, binary),
+    version: 2, name: basename, action: selection.all ? 'all' : 'selected', directionOrder: DIRECTIONS, actVersion: '2.5', sprVersion: '2.0', actionCount: binary.actions.length,
+    selectedActionCount: selection.indices.size,
+    selectedActionIndices: [...selection.indices],
+    excludedActionIndices: binary.actions.flatMap((_, index) => selection.indices.has(index) ? [] : [index]),
+    groups: groupManifest(selection.groups, binary),
     frames: binary.actions.map(action => action.frames.length), delaysMs: binary.actions.map(action => action.delay),
     emptyActionIndices: binary.actions.flatMap((action, index) => action.frames.length ? [] : [index]),
     warnings: binary.warnings,
@@ -259,8 +281,8 @@ export async function exportNpc(parts, { name = 'custom_npc', metadata = {} } = 
   onProgress('Packaging the download…');
   await yieldUI();
   const blob = createZip(files);
-  return { blob, filename: `${basename}_all_actions.zip`, summary: {
-    action: 'all', actionCount: manifest.actionCount, groupCount: manifest.groups.filter(group => group.directions.length).length,
+  return { blob, filename: `${basename}_${manifest.action}_actions.zip`, summary: {
+    action: manifest.action, actionCount: manifest.actionCount, selectedActionCount: manifest.selectedActionCount, groupCount: manifest.groups.filter(group => group.directions.length).length,
     directions: 8, frames: manifest.frames, images: binary.imageCount, bytes: blob.size,
     hasSpriteSheet: manifest.spriteSheets.some(sheet => sheet.status === 'included'), warnings: manifest.warnings,
   } };

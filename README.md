@@ -1,6 +1,6 @@
 # Character Forge
 
-A browser-based Ragnarok character editor and NPC sprite exporter. Import `data.grf`, choose a job and hair style, equip headgear and garments, preview the job's available actions, and download the **complete animation set** as one native SPR/ACT package.
+A browser-based Ragnarok character editor and NPC sprite exporter. Import `data.grf`, choose a job and hair style, equip headgear and garments, preview the job's available actions, and download your selected actions as one native SPR/ACT package.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ Serve the files over HTTP or HTTPS instead of opening `index.html` directly from
 2. Choose a job, **Male** or **Female**, and a hair style. Only resources found in the selected archive are available.
 3. Choose an equipment slot and search by name, item ID or view ID. Add upper, middle or lower headgear, costume headgear, and a garment. Costume pieces replace the corresponding ordinary headgear in the visible composition.
 4. Use the **Action** selector to preview Idle, Walking, Sitting, attacks, casting, or any other action available in the selected job. Rotate through available directions, adjust zoom, pause animation or toggle the preview grid.
-5. Click **Export NPC sprite**, enter a filename, review the included actions and any equipment availability notes, then **Export all actions**. The preview's selected action does not limit the export.
+5. Click **Export NPC sprite**, enter a filename, and choose the action checkboxes to include. All actions start selected; **Select All** and **Unselect All** update the whole list. Review any equipment availability notes, then click **Export all actions** or **Export selected actions**. At least one action must be checked. The preview's selected action does not limit the export.
 
 The import is a local file selection, not a server upload. The browser reads the GRF table and extracts individual resources as needed; it does not read the entire multi-gigabyte archive into memory. No archive or selection is saved to a server or browser storage. Reloading the page requires choosing the archive again. **Change** returns to the import step.
 
@@ -35,18 +35,18 @@ The import is a local file selection, not a server upload. The browser reads the
 | File | Contents |
 | --- | --- |
 | `name.spr` | SPR 2.0 true-color images combined from the selected parts. |
-| `name.act` | ACT 2.5 containing every original directional action slot from the selected job, in its original order. |
+| `name.act` | ACT 2.5 containing selected actions in their original directional slots; unselected slots remain empty. |
 | `name.json` | Selected parts, action groups and indices, direction order, frame counts, timing, and availability notes. |
-| `previews/` | Optional transparent contact sheets, one per action group. Directions are rows and animation frames are columns. |
+| `previews/` | Optional transparent contact sheets, one per selected action group. Directions are rows and animation frames are columns. |
 | `README.txt` | Notes for installing the exported sprite. |
 
-The ZIP is named `name_all_actions.zip`. Export preserves the body's action indices, including empty slots and additional groups found in the archive. A typical player job has 13 groups with eight directions each, for **104 directional actions**. Jobs with more or fewer source slots retain their own layout.
+The ZIP is named `name_all_actions.zip` when all available actions are selected, or `name_selected_actions.zip` for a subset. Export preserves the body's action indices, including empty slots and additional groups found in the archive. Unchecked actions have no frames or preview sheets. A typical player job has 13 groups with eight directions each, for **104 directional actions** when all are selected. Jobs with more or fewer source slots retain their own layout.
 
 The standard player action groups are Idle, Walking, Sitting, Picking up, Combat ready, Attacking 1, Taking damage, Frozen, Dead, Frozen 2, Attacking 2, Attacking 3, and Casting / skill. Extra groups appear as **Additional action** with their group index. Directions are South, Southwest, West, Northwest, North, Northeast, East and Southeast.
 
 Idle and Sitting use neutral head-look variants and retain built-in equipment animation. Moving and combat actions use the body's full frame sequence and timing, with equipment aligned to the body. Source palettes remain distinct through true-color conversion. Layer offsets, tint, mirroring, rotation and scale are retained; player sound events are omitted.
 
-If an equipped piece or hairstyle has no matching action, it is omitted only from that action and direction. The preview and export dialog display these gaps, and the ZIP records them in its metadata and installation notes. No unrelated pose is substituted. All source body actions remain in the export.
+If an equipped piece or hairstyle has no matching action, it is omitted only from that action and direction. The preview and export dialog display these gaps, and the ZIP records them in its metadata and installation notes. No unrelated pose is substituted. All selected body actions remain in the export.
 
 To install an export, keep the matching `.spr` and `.act` together in your client's NPC sprite resource path, normally `data/sprite/npc/`, or pack that path into a GRF. Register the sprite basename with an **unused NPC view ID** in the matching client identity/name tables and configure the server NPC to use that ID. The required table names and valid ID range depend on your client and server. Export does not modify the GRF, client mappings or server configuration. Which animations play in-game depends on the client and server; a stationary NPC will not automatically walk, attack, or cast just because those animations are included. Check the result in your own game client.
 
@@ -58,7 +58,17 @@ To install an export, keep the matching `.spr` and `.act` together in your clien
 - Client item metadata often has no structured equipment location. Slot information can be inferred from supported description formats. Custom descriptions or missing metadata can leave a slot unknown; unclassified headgear can be placed manually in the chosen slot. Review the selected pieces in the preview.
 - A job or gender may be absent from the archive. Garments can require an ACT file specific to the selected job. Missing pairs or unavailable part actions are reported; the exporter does not fabricate missing directions.
 - Only the selected archive is indexed. Resources supplied by another GRF or a loose client `data/` folder are not automatically merged.
-- The archive report lists import notes. Very large individual resources, unsafe paths, unsupported binary variants, and excessively large animation combinations are rejected with a message. Native export is limited to 10,000 referenced images and 16 million image pixels; ZIP size is limited to 128 MB. A contact sheet exceeding 8192 pixels on either axis, 32 million pixels, or the remaining ZIP budget is omitted while all native actions remain included. The JSON records any omitted sheets.
+- The archive report lists import notes. Very large individual resources, unsafe paths, unsupported binary variants, and excessively large animation combinations are rejected with a message. Native export is limited to 10,000 referenced images and 16 million image pixels; ZIP size is limited to 128 MB. A contact sheet exceeding 8192 pixels on either axis, 32 million pixels, or the remaining ZIP budget is omitted while all selected native actions remain included. The JSON records any omitted sheets.
+
+## Development checks
+
+Node.js is optional and used only to run the automated checks:
+
+```sh
+npm test
+```
+
+The tests cover selecting all or some actions, rejecting empty or invalid selections, preserving original ACT indices, excluding unselected images and equipment warnings, native export roundtrips, and ZIP metadata. No game assets are bundled with the tests.
 
 ## Credits and license
 
