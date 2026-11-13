@@ -34,26 +34,22 @@ function exportSelection(parts, actionIds) {
   const selected = new Set(actionIds === undefined ? available.map(group => group.id) : actionIds);
   if ([...selected].some(id => !available.some(group => group.id === id))) throw new Error('Choose actions available in the selected job.');
   const all = available.every(group => selected.has(group.id));
-  const selectedGroups = all ? groups : groups.filter(group => selected.has(group.id));
+  const compact = !all || (actionIds !== undefined && selected.size === 1);
+  const selectedGroups = compact ? groups.filter(group => selected.has(group.id)) : groups;
   const indices = new Set(selectedGroups.flatMap(group => Array.from({ length: Math.min(8, count - group.base) }, (_, direction) => group.base + direction)));
-  return { count, groups: selectedGroups, indices, all };
+  return { count, groups: selectedGroups, indices, all, compact };
 }
 
-// Keep original ACT indices, including partial final groups. Unselected groups
-// have empty slots so selecting a later action never changes its meaning.
+// Compose using source indices, then write only the selected groups in order.
+// A single selected action starts at ACT 0, with its direction slots intact.
 export function buildNpcBinary(parts, { actionIds } = {}) {
   const selection = exportSelection(parts, actionIds);
   const compositions = [], totals = { frames: 0, layers: 0 };
-  for (let actionIndex = 0; actionIndex < selection.count; actionIndex++) collectComposition(parts, actionIndex, compositions, totals, selection.indices.has(actionIndex));
+  for (const actionIndex of selection.indices) collectComposition(parts, actionIndex, compositions, totals);
   return assembleBinary(parts, compositions);
 }
 
-function collectComposition(parts, actionIndex, compositions, totals, selected = true) {
-  if (!selected) {
-    const source = parts.find(part => part.kind === 'body').act.actions[actionIndex];
-    compositions.push({ actionIndex, direction: actionIndex % 8, frames: [], delay: Math.max(1, source?.delay || 96), empty: true, warnings: [] });
-    return;
-  }
+function collectComposition(parts, actionIndex, compositions, totals) {
   const composition = composeAction(parts, { actionIndex, allowEmpty: true });
   totals.frames += composition.frames.length;
   for (const frame of composition.frames) for (const layers of frame) totals.layers += layers.length;
@@ -188,13 +184,17 @@ async function previewSheet(compositions) {
 }
 
 function groupManifest(groups, binary) {
+  const exportedIndices = new Map(binary.compositions.map((composition, index) => [composition.actionIndex, index]));
   return groups.map(group => {
-    const count = Math.min(8, binary.actions.length - group.base);
-    const indices = Array.from({ length: count }, (_, direction) => group.base + direction);
+    const base = exportedIndices.get(group.base);
+    const count = Math.min(8, binary.actions.length - base);
+    const indices = Array.from({ length: count }, (_, direction) => base + direction);
     return {
-      id: group.id, label: group.label, groupIndex: group.index, base: group.base,
+      id: group.id, label: group.label, groupIndex: base / 8, base,
+      sourceGroupIndex: group.index, sourceBase: group.base,
+      sourceActionIndices: indices.map(index => binary.compositions[index].actionIndex),
       actionIndices: indices,
-      directions: indices.filter(index => binary.actions[index].frames.length).map(index => index - group.base),
+      directions: indices.filter(index => binary.actions[index].frames.length).map(index => index - base),
       emptyActionIndices: indices.filter(index => !binary.actions[index].frames.length),
     };
   });
@@ -210,7 +210,9 @@ function exportReadme(basename, manifest) {
 ${basename}: ${manifest.action === 'all' ? 'all' : 'selected'} job actions
 
 The .spr and .act files share a basename and must stay together.
-All ${manifest.actionCount} original job ACT slots retain their original order. ${manifest.action === 'all' ? 'Empty source slots remain empty.' : 'Unselected action slots are empty; only selected actions contain animation data.'} Action groups are not renumbered.
+${manifest.actionLayout === 'compact'
+    ? `Only the selected action groups are included in the ${manifest.actionCount} ACT slots, starting at ACT 0 in source order. Unselected groups are removed. A single selected action opens as the first action in Act Editor. Original source indices are recorded in the JSON.`
+    : `All ${manifest.actionCount} original job ACT slots retain their original order. Empty source slots remain empty.`}
 Each group uses the direction order: ${DIRECTIONS.join(', ')}.
 
 ACTION GROUPS
@@ -233,23 +235,26 @@ No game data or server configuration was changed by this export.
 
 export async function exportNpc(parts, { name = 'custom_npc', metadata = {}, actionIds } = {}, onProgress = () => {}) {
   const selection = exportSelection(parts, actionIds);
-  const basename = safeName(name), count = selection.count, compositions = [], totals = { frames: 0, layers: 0 };
-  for (let actionIndex = 0; actionIndex < count; actionIndex++) {
-    if (actionIndex % 8 === 0) {
-      onProgress(`Combining ${selection.all ? 'all' : 'selected'} job actions… ${actionIndex} / ${count}`);
+  const basename = safeName(name), sourceIndices = [...selection.indices], compositions = [], totals = { frames: 0, layers: 0 };
+  for (const actionIndex of sourceIndices) {
+    if (compositions.length % 8 === 0) {
+      onProgress(`Combining ${selection.all ? 'all' : 'selected'} job actions… ${compositions.length} / ${sourceIndices.length}`);
       await yieldUI();
     }
-    collectComposition(parts, actionIndex, compositions, totals, selection.indices.has(actionIndex));
+    collectComposition(parts, actionIndex, compositions, totals);
   }
   onProgress('Encoding the SPR/ACT pair…');
   await yieldUI();
   const binary = assembleBinary(parts, compositions);
   const manifest = {
     ...metadata,
-    version: 2, name: basename, action: selection.all ? 'all' : 'selected', directionOrder: DIRECTIONS, actVersion: '2.5', sprVersion: '2.0', actionCount: binary.actions.length,
+    version: 3, name: basename, action: selection.all ? 'all' : 'selected', directionOrder: DIRECTIONS, actVersion: '2.5', sprVersion: '2.0', actionCount: binary.actions.length,
+    actionLayout: selection.compact ? 'compact' : 'original',
+    sourceActionCount: selection.count, sourceActionIndices: sourceIndices,
+    excludedSourceActionIndices: Array.from({ length: selection.count }, (_, index) => index).filter(index => !selection.indices.has(index)),
     selectedActionCount: selection.indices.size,
-    selectedActionIndices: [...selection.indices],
-    excludedActionIndices: binary.actions.flatMap((_, index) => selection.indices.has(index) ? [] : [index]),
+    selectedActionIndices: binary.actions.map((_, index) => index),
+    excludedActionIndices: [],
     groups: groupManifest(selection.groups, binary),
     frames: binary.actions.map(action => action.frames.length), delaysMs: binary.actions.map(action => action.delay),
     emptyActionIndices: binary.actions.flatMap((action, index) => action.frames.length ? [] : [index]),
