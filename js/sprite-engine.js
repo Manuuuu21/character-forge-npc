@@ -13,20 +13,64 @@ export { rgbaImage };
 export function createPart(sprBuffer, actBuffer, metadata = {}) {
   return { ...metadata, spr: parseSpr(sprBuffer), act: parseAct(actBuffer) };
 }
-export const ACTIONS = { idle: 0, sit: 16 };
+// Standard player ACT group indices. Additional groups are discovered from the
+// body instead of being discarded. These labels describe the player layout.
+export const ACTION_DEFINITIONS = [
+  ['idle', 'Idle'], ['walk', 'Walking'], ['sit', 'Sitting'], ['pickup', 'Picking up'],
+  ['ready', 'Combat ready'], ['attack', 'Attacking 1'], ['hurt', 'Taking damage'],
+  ['freeze', 'Frozen'], ['dead', 'Dead'], ['freeze2', 'Frozen 2'],
+  ['attack2', 'Attacking 2'], ['attack3', 'Attacking 3'], ['cast', 'Casting / skill'],
+].map(([id, label], index) => ({ id, label, index, base: index * 8 }));
+export const ACTIONS = Object.fromEntries(ACTION_DEFINITIONS.map(action => [action.id, action.base]));
 export const DIRECTIONS = ['South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast', 'East', 'Southeast'];
 
-export function actionProblems(parts, action = 'idle') {
-  if (!(action in ACTIONS)) return ['Choose Idle or Sit.'];
-  const problems = [];
-  if (!parts.some(part => part.kind === 'body')) problems.push('Choose a job sprite.');
-  for (const part of parts) {
-    const missing = DIRECTIONS.filter((_, direction) => !part.act?.actions[ACTIONS[action] + direction]?.frames?.length);
-    if (missing.length) problems.push(`${part.name || part.kind || 'Sprite'} has no ${action} frames for ${missing.join(', ')}.`);
-  }
-  return problems;
+function groupDefinition(index) {
+  return ACTION_DEFINITIONS[index] || { id: `action-${index}`, label: `Additional action ${index}`, index, base: index * 8 };
 }
-export const supportsAction = (parts, action) => actionProblems(parts, action).length === 0;
+function actionBase(action) {
+  if (Object.hasOwn(ACTIONS, action)) return ACTIONS[action];
+  const match = typeof action === 'string' && /^action-(\d+)$/.exec(action);
+  if (match && Number(match[1]) < 125) return Number(match[1]) * 8;
+  return null;
+}
+export function actionLabel(action) {
+  const base = actionBase(action);
+  return base === null ? 'Unknown action' : groupDefinition(base / 8).label;
+}
+function partWarnings(parts, base, directions) {
+  const label = groupDefinition(Math.floor(base / 8)).label;
+  return parts.filter(part => part.kind !== 'body').flatMap(part => {
+    const missing = directions.filter(direction => !part.act?.actions[base + direction]?.frames?.length);
+    return missing.length ? [`${part.name || part.kind || 'Sprite'} has no ${label} frames for ${missing.map(direction => DIRECTIONS[direction]).join(', ')} and is omitted in those directions.`] : [];
+  });
+}
+export function enumerateActions(parts) {
+  const body = parts.find(part => part.kind === 'body');
+  const actions = body?.act?.actions || [];
+  return Array.from({ length: Math.ceil(actions.length / 8) }, (_, index) => {
+    const definition = groupDefinition(index);
+    const directions = DIRECTIONS.map((_, direction) => direction).filter(direction => actions[definition.base + direction]?.frames?.length);
+    return { ...definition, directions,
+      supportedDirections: directions.filter(direction => parts.every(part => part.act?.actions[definition.base + direction]?.frames?.length)),
+      warnings: partWarnings(parts, definition.base, directions),
+      problems: directions.length ? [] : [`${definition.label} has no frames in this job sprite.`],
+    };
+  });
+}
+export function actionProblems(parts, action = 'idle', direction) {
+  const body = parts.find(part => part.kind === 'body');
+  if (!body) return ['Choose a job sprite.'];
+  const base = actionBase(action);
+  if (base === null) return ['Choose an action available in this job sprite.'];
+  if (direction !== undefined) {
+    if (!Number.isInteger(direction) || direction < 0 || direction > 7) return ['Choose one of the eight directions.'];
+    if (!body.act?.actions[base + direction]?.frames?.length) return [`${actionLabel(action)} has no ${DIRECTIONS[direction]} frames in this job sprite.`];
+  } else if (!body.act?.actions?.slice(base, base + 8).some(source => source?.frames?.length)) {
+    return [`${actionLabel(action)} is unavailable in this job sprite.`];
+  }
+  return [];
+}
+export const supportsAction = (parts, action, direction) => actionProblems(parts, action, direction).length === 0;
 
 function imageFor(spr, layer) {
   if (layer.index < 0) return null;
@@ -50,11 +94,15 @@ export function poseFrameCount(action) {
 }
 const gcd = (a, b) => b ? gcd(b, a % b) : a;
 const lcm = (a, b) => a / gcd(a, b) * b;
-function timeline(actions) {
-  const durations = actions.map(action => Math.max(1, Math.round(action.delay)));
-  const counts = actions.map(poseFrameCount);
+function timeline(actions, body, neutral) {
+  const durations = actions.map(action => Math.max(1, neutral ? Math.round(action?.delay || 1) : action?.delay || 1));
+  const counts = actions.map(action => action ? (neutral ? poseFrameCount(action) : action.frames.length) : 0);
+  // Movement and combat follow the body frame clock. Per-accessory delays can
+  // differ even for matching walking poses; playing those independently makes
+  // hats and hair lag behind the body's movement.
+  if (!neutral) return { count: counts[body], delay: durations[body], durations, counts };
   const animated = counts.map((count, i) => count > 1 ? i : -1).filter(i => i >= 0);
-  if (!animated.length) return { count: 1, delay: durations[0], durations, counts };
+  if (!animated.length) return { count: 1, delay: durations[body], durations, counts };
   const delay = animated.map(i => durations[i]).reduce(gcd);
   let cycle = 1;
   for (const i of animated) {
@@ -94,26 +142,50 @@ export function measureFrames(parts, frames, padding = 2) {
   return { minX, minY, width, height, scale: 1 };
 }
 export function composeCharacter(parts, { action = 'idle', direction = 0 } = {}) {
-  if (!Number.isInteger(direction) || direction < 0 || direction > 7) throw new Error('Choose one of the eight directions.');
-  const problems = actionProblems(parts, action);
+  const problems = actionProblems(parts, action, direction);
   if (problems.length) throw new Error(problems.join(' '));
+  return composeAction(parts, { actionIndex: actionBase(action) + direction });
+}
+// Exports use exact source indices, including intentional empty slots. Missing
+// optional part actions are omitted and reported, never replaced by another pose.
+export function composeAction(parts, { actionIndex, allowEmpty = false } = {}) {
   const body = parts.findIndex(part => part.kind === 'body');
-  const actions = parts.map(part => part.act.actions[ACTIONS[action] + direction]);
-  const timing = timeline(actions);
+  if (body < 0) throw new Error('Choose a job sprite.');
+  if (!Number.isInteger(actionIndex) || actionIndex < 0 || actionIndex >= parts[body].act.actions.length) throw new Error('This source action index is unavailable.');
+  const definition = groupDefinition(Math.floor(actionIndex / 8));
+  const direction = actionIndex % 8;
+  const base = { parts, action: definition.id, label: definition.label, actionIndex, direction, order: layerOrder(parts, direction) };
+  const sourceBody = parts[body].act.actions[actionIndex];
+  const blankBounds = { minX: 0, minY: 0, width: 1, height: 1, scale: 1 };
+  if (!sourceBody?.frames?.length) {
+    if (!allowEmpty) throw new Error(`${definition.label} has no ${DIRECTIONS[direction]} frames in this job sprite.`);
+    return { ...base, frames: [], delay: Math.max(1, sourceBody?.delay || 96), bounds: blankBounds, empty: true, warnings: [] };
+  }
+  const actions = parts.map(part => part.act?.actions[actionIndex]?.frames?.length ? part.act.actions[actionIndex] : null);
+  const neutral = definition.id === 'idle' || definition.id === 'sit';
+  const timing = timeline(actions, body, neutral);
+  let composedLayers = 0;
   const frames = Array.from({ length: timing.count }, (_, frame) => {
-    const indices = actions.map((_, i) => Math.floor(frame * timing.delay / timing.durations[i]) % timing.counts[i]);
+    const indices = actions.map((_, i) => !timing.counts[i] ? -1 : neutral
+      ? Math.floor(frame * timing.delay / timing.durations[i]) % timing.counts[i]
+      : definition.id === 'walk' ? frame % timing.counts[i] : Math.min(frame, timing.counts[i] - 1));
     const bodyAnchor = actions[body].anchors?.[indices[body]]?.[0];
     return actions.map((partAction, i) => {
+      if (!partAction) return [];
       const source = partAction.anchors?.[indices[i]]?.[0];
       const attached = parts[i].kind !== 'body' && parts[i].kind !== 'garment';
       const dx = attached && source && bodyAnchor ? bodyAnchor.x - source.x : 0;
       const dy = attached && source && bodyAnchor ? bodyAnchor.y - source.y : 0;
-      return partAction.frames[indices[i]]
-        .filter(layer => !attached || parts[i].kind === 'head' || !hiddenMarker(parts[i].spr, layer))
-        .map(layer => ({ ...layer, x: layer.x + dx, y: layer.y + dy }));
+      const layers = partAction.frames[indices[i]]
+        .filter(layer => !attached || parts[i].kind === 'head' || !hiddenMarker(parts[i].spr, layer));
+      composedLayers += layers.length;
+      if (composedLayers > 500000) throw new Error(`${definition.label} exceeds the supported composition size. Remove an animated accessory to reduce its size.`);
+      return layers.map(layer => ({ ...layer, x: layer.x + dx, y: layer.y + dy }));
     });
   });
-  return { parts, action, direction, frames, delay: timing.delay, order: layerOrder(parts, direction), bounds: measureFrames(parts, frames) };
+  const visible = frames.some(frame => frame.some(layers => layers.some(layer => layer.index >= 0 && layer.color[3])));
+  return { ...base, frames, delay: timing.delay, bounds: visible ? measureFrames(parts, frames) : blankBounds,
+    empty: false, warnings: partWarnings(parts, definition.base, [direction]) };
 }
 
 function makeCanvas(width, height) {
@@ -147,6 +219,7 @@ export function drawComposition(canvas, composition, { frameIndex = 0, scale = 3
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.imageSmoothingEnabled = false;
   if (background) { ctx.fillStyle = background; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+  if (!frames.length) return ctx;
   const frame = frames[((Math.floor(frameIndex) % frames.length) + frames.length) % frames.length];
   for (const i of order) for (const layer of frame[i]) {
     if (!layer.color[3]) continue;
@@ -160,7 +233,8 @@ export function drawComposition(canvas, composition, { frameIndex = 0, scale = 3
   return ctx;
 }
 export function drawPartThumbnail(canvas, part, { direction = 0, action = 'idle', size = 64 } = {}) {
-  const source = part.act.actions[ACTIONS[action] + direction];
+  const base = actionBase(action);
+  const source = base === null ? null : part.act.actions[base + direction];
   if (!source?.frames.length) throw new Error('This preview direction is unavailable.');
   const frame = source.frames[0].filter(layer => !hiddenMarker(part.spr, layer));
   const bounds = measureFrames([part], [[frame]]);

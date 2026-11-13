@@ -1,5 +1,5 @@
 import { openCharacterArchive, loadPair, resolveItemPair, closeCatalog } from './catalog.js';
-import { createPart, composeCharacter, drawComposition, drawPartThumbnail, supportsAction } from './sprite-engine.js';
+import { createPart, composeCharacter, drawComposition, drawPartThumbnail, enumerateActions } from './sprite-engine.js';
 import { exportNpc } from './export-npc.js';
 
 const $ = id => document.getElementById(id);
@@ -11,7 +11,7 @@ const SLOTS = [
 const DIRECTIONS = ['Front', 'Front left', 'Left', 'Back left', 'Back', 'Back right', 'Right', 'Front right'];
 const PAGE_SIZE = 24;
 const state = { catalog: null, job: null, head: null, gender: 'male', action: 'idle', direction: 0, zoom: 3,
-  slot: 'top', loadout: {}, page: 0, parts: [], composition: null, playing: !matchMedia('(prefers-reduced-motion: reduce)').matches,
+  slot: 'top', loadout: {}, page: 0, parts: [], actions: [], composition: null, playing: !matchMedia('(prefers-reduced-motion: reduce)').matches,
   frame: 0, lastFrame: 0, generation: 0, itemGeneration: 0, importing: false, exporting: false };
 let pairCache = new Map();
 let thumbnailObserver;
@@ -163,7 +163,8 @@ function visibleEquipment() {
 }
 async function updatePreview() {
   const generation = ++state.generation;
-  state.composition = null; state.parts = []; state.frame = 0;
+  state.composition = null; state.parts = []; state.actions = []; state.frame = 0;
+  $('action-select').disabled = true;
   $('export-button').disabled = true;
   $('sprite-canvas').hidden = true;
   showPreviewMessage('Loading character sprites…');
@@ -175,11 +176,8 @@ async function updatePreview() {
     const parts = await Promise.all(requests);
     if (generation !== state.generation || !state.catalog) return;
     state.parts = parts;
-    for (const button of document.querySelectorAll('[data-action]')) {
-      button.disabled = !supportsAction(parts, button.dataset.action);
-      button.classList.toggle('selected', button.dataset.action === state.action);
-      button.setAttribute('aria-pressed', button.dataset.action === state.action);
-    }
+    state.actions = enumerateActions(parts);
+    renderActions();
     renderComposition();
   } catch (error) {
     if (generation !== state.generation) return;
@@ -187,18 +185,43 @@ async function updatePreview() {
     say('The selected sprite could not be loaded. Try another job or remove the affected equipment. ' + error.message, true);
   }
 }
+function selectedAction() { return state.actions.find(action => action.id === state.action); }
+function renderActions() {
+  const available = state.actions.filter(action => action.directions.length);
+  if (!available.some(action => action.id === state.action)) state.action = available[0]?.id || 'idle';
+  $('action-select').replaceChildren();
+  for (const action of available) {
+    const option = new Option(action.label, action.id);
+    option.selected = action.id === state.action;
+    if (action.warnings?.length) option.title = 'Some equipped pieces are unavailable in this action.';
+    $('action-select').append(option);
+  }
+  $('action-select').disabled = !available.length;
+  renderDirections();
+}
+function renderDirections() {
+  const directions = selectedAction()?.directions || [];
+  if (!directions.includes(state.direction)) state.direction = directions[0] ?? 0;
+  for (const option of $('direction').options) option.disabled = !directions.includes(Number(option.value));
+  $('direction').value = String(state.direction);
+  $('direction').disabled = !directions.length;
+  $('rotate-left').disabled = directions.length < 2;
+  $('rotate-right').disabled = directions.length < 2;
+}
 function renderComposition() {
   state.composition = null;
   $('export-button').disabled = true;
   try {
     const composition = composeCharacter(state.parts, { action: state.action, direction: state.direction });
     state.composition = composition; state.frame = 0; state.lastFrame = performance.now();
+    const label = selectedAction()?.label || state.action;
     $('character-name').textContent = state.job.name;
-    $('character-details').textContent = `${state.gender === 'male' ? 'Male' : 'Female'} · ${state.action === 'idle' ? 'Idle' : 'Sit'} · ${DIRECTIONS[state.direction]}`;
-    $('pose-caption').textContent = state.action.toUpperCase();
-    $('sprite-canvas').setAttribute('aria-label', `${state.job.name}, ${state.gender}, ${state.action}, facing ${DIRECTIONS[state.direction]}`);
+    $('character-details').textContent = `${state.gender === 'male' ? 'Male' : 'Female'} · ${label} · ${DIRECTIONS[state.direction]}`;
+    $('pose-caption').textContent = label.toUpperCase();
+    $('sprite-canvas').setAttribute('aria-label', `${state.job.name}, ${state.gender}, ${label}, facing ${DIRECTIONS[state.direction]}`);
     $('sprite-canvas').hidden = false;
     showPreviewMessage();
+    say(composition.warnings?.length ? composition.warnings.join(' ') : '');
     drawFrame();
     $('export-button').disabled = false;
   } catch (error) {
@@ -337,7 +360,17 @@ function renderReport(file) {
   }
 }
 
-function changeDirection(value) { state.direction = (value + 8) % 8; $('direction').value = String(state.direction); if (state.parts.length) renderComposition(); }
+function changeDirection(value) {
+  if (!selectedAction()?.directions.includes(value)) return;
+  state.direction = value; $('direction').value = String(value);
+  if (state.parts.length) renderComposition();
+}
+function rotateDirection(step) {
+  const directions = selectedAction()?.directions || [];
+  if (!directions.length) return;
+  const index = directions.indexOf(state.direction);
+  changeDirection(directions[(index + step + directions.length) % directions.length]);
+}
 function changeZoom(delta) {
   const previous = state.zoom;
   state.zoom = Math.min(8, Math.max(1, state.zoom + delta));
@@ -346,8 +379,15 @@ function changeZoom(delta) {
 function openExport() {
   if (!state.parts.length || !state.composition) return;
   $('export-name').value = `${state.job.name}_${state.gender}`.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').slice(0, 54) || 'my_npc';
-  $('export-action').value = state.action;
-  for (const option of $('export-action').options) option.disabled = !supportsAction(state.parts, option.value);
+  const available = state.actions.filter(action => action.directions.length);
+  $('export-action-count').textContent = `All ${available.length} job actions included`;
+  $('export-action-list').replaceChildren(...available.map(action => node('span', '', action.label)));
+  const warnings = [...new Set(state.actions.flatMap(action => action.warnings || []))];
+  $('export-warnings').hidden = !warnings.length;
+  $('export-warnings').open = false;
+  $('export-warning-summary').textContent = `Missing equipment actions (${warnings.length})`;
+  $('export-warning-list').replaceChildren(...warnings.slice(0, 80).map(warning => node('li', '', warning)));
+  if (warnings.length > 80) $('export-warning-list').append(node('li', '', `${warnings.length - 80} more notes will be included in the export metadata.`));
   $('export-status').hidden = true;
   $('export-dialog').showModal();
 }
@@ -356,12 +396,11 @@ async function downloadExport(event) {
   if (state.exporting || !state.parts.length) return;
   state.exporting = true;
   $('download-export').disabled = true; $('close-export').disabled = true;
-  $('export-name').disabled = true; $('export-action').disabled = true;
+  $('export-name').disabled = true;
   $('export-status').hidden = false;
   $('export-status').textContent = 'Preparing your NPC…';
   try {
-    const action = $('export-action').value;
-    const result = await exportNpc(state.parts, { action, name: $('export-name').value, metadata: {
+    const result = await exportNpc(state.parts, { name: $('export-name').value, metadata: {
       archive: $('archive-name').textContent, job: state.job.name, jobId: state.job.jobId, jobResource: state.job.resource, gender: state.gender,
       hairstyle: state.head?.id ?? null,
       equipment: Object.fromEntries(Object.entries(state.loadout).map(([slot, item]) => [slot, { id: item.id, viewId: item.viewId, name: item.name }])),
@@ -369,10 +408,11 @@ async function downloadExport(event) {
     const url = URL.createObjectURL(result.blob);
     const link = node('a'); link.href = url; link.download = result.filename; document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    $('export-status').textContent = `Ready! ${result.filename} was sent to your downloads. Contains only ${action === 'idle' ? 'Idle' : 'Sit'} in all eight directions.`;
-    say(`Exported ${result.filename}. The ZIP includes the SPR/ACT pair and installation notes.`);
+    $('export-status').textContent = `Ready! ${result.filename} was sent to your downloads with the full job animation set (${result.summary.actionCount} directional actions).`;
+    const warningCount = result.summary.warnings?.length || 0;
+    say(`Exported ${result.filename} with all job actions.${warningCount ? ' Review the included notes for unavailable equipment actions and omitted preview sheets.' : ''}`);
   } catch (error) { $('export-status').textContent = 'Export failed: ' + error.message; }
-  finally { state.exporting = false; $('download-export').disabled = false; $('close-export').disabled = false; $('export-name').disabled = false; $('export-action').disabled = false; }
+  finally { state.exporting = false; $('download-export').disabled = false; $('close-export').disabled = false; $('export-name').disabled = false; }
 }
 
 $('choose-file').onclick = () => $('grf-file').click();
@@ -385,7 +425,7 @@ window.addEventListener('dragover', event => { if (event.dataTransfer.types.incl
 window.addEventListener('drop', event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); });
 $('change-archive').onclick = () => {
   state.generation++; state.itemGeneration++; thumbnailObserver?.disconnect();
-  closeCatalog(state.catalog); state.catalog = null; state.parts = []; state.composition = null; pairCache = new Map();
+  closeCatalog(state.catalog); state.catalog = null; state.parts = []; state.actions = []; state.composition = null; pairCache = new Map();
   state.job = null; state.head = null; state.loadout = {};
   $('editor-screen').hidden = true; $('import-screen').hidden = false; $('import-error').hidden = true;
   window.scrollTo({ top: 0 }); $('choose-file').focus();
@@ -398,14 +438,14 @@ document.querySelectorAll('[data-gender]').forEach(button => button.onclick = ()
   for (const slot of Object.keys(state.loadout)) if (!pairFor(state.loadout[slot])) delete state.loadout[slot];
   renderGenders(); renderJobs(); renderHeads(); renderItems(); renderLoadout(); updatePreview();
 });
-document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => {
-  state.action = button.dataset.action;
-  document.querySelectorAll('[data-action]').forEach(item => { item.classList.toggle('selected', item === button); item.setAttribute('aria-pressed', item === button); });
+$('action-select').onchange = () => {
+  state.action = $('action-select').value;
+  renderDirections();
   renderComposition();
-});
+};
 $('direction').onchange = () => changeDirection(Number($('direction').value));
-$('rotate-left').onclick = () => changeDirection(state.direction - 1);
-$('rotate-right').onclick = () => changeDirection(state.direction + 1);
+$('rotate-left').onclick = () => rotateDirection(-1);
+$('rotate-right').onclick = () => rotateDirection(1);
 $('zoom-out').onclick = () => changeZoom(-1); $('zoom-in').onclick = () => changeZoom(1);
 $('play-toggle').onclick = () => { state.playing = !state.playing; state.lastFrame = performance.now(); updatePlaybackButton(); };
 $('grid-toggle').onchange = () => $('preview-stage').classList.toggle('no-grid', !$('grid-toggle').checked);
