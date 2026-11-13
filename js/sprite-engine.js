@@ -37,10 +37,18 @@ export function actionLabel(action) {
   const base = actionBase(action);
   return base === null ? 'Unknown action' : groupDefinition(base / 8).label;
 }
+const isCompanion = part => part.kind === 'falcon' || part.kind === 'cart';
+function sourceAction(part, actionIndex) {
+  // Companion ACTs have their own layout: eight cart directions, or eight
+  // flapping directions followed by eight falcon attack/glide directions.
+  // Following a player does not trigger the falcon's separate attack skill.
+  const index = isCompanion(part) ? actionIndex % 8 : actionIndex;
+  return part.act?.actions[index]?.frames?.length ? part.act.actions[index] : null;
+}
 function partWarnings(parts, base, directions) {
   const label = groupDefinition(Math.floor(base / 8)).label;
   return parts.filter(part => part.kind !== 'body').flatMap(part => {
-    const missing = directions.filter(direction => !part.act?.actions[base + direction]?.frames?.length);
+    const missing = directions.filter(direction => !sourceAction(part, base + direction));
     return missing.length ? [`${part.name || part.kind || 'Sprite'} has no ${label} frames for ${missing.map(direction => DIRECTIONS[direction]).join(', ')} and is omitted in those directions.`] : [];
   });
 }
@@ -51,7 +59,7 @@ export function enumerateActions(parts) {
     const definition = groupDefinition(index);
     const directions = DIRECTIONS.map((_, direction) => direction).filter(direction => actions[definition.base + direction]?.frames?.length);
     return { ...definition, directions,
-      supportedDirections: directions.filter(direction => parts.every(part => part.act?.actions[definition.base + direction]?.frames?.length)),
+      supportedDirections: directions.filter(direction => parts.every(part => sourceAction(part, definition.base + direction))),
       warnings: partWarnings(parts, definition.base, directions),
       problems: directions.length ? [] : [`${definition.label} has no frames in this job sprite.`],
     };
@@ -94,13 +102,31 @@ export function poseFrameCount(action) {
 }
 const gcd = (a, b) => b ? gcd(b, a % b) : a;
 const lcm = (a, b) => a / gcd(a, b) * b;
-function timeline(actions, body, neutral) {
+function timeline(parts, actions, body, neutral, walking) {
   const durations = actions.map(action => Math.max(1, neutral ? Math.round(action?.delay || 1) : action?.delay || 1));
-  const counts = actions.map(action => action ? (neutral ? poseFrameCount(action) : action.frames.length) : 0);
+  const counts = actions.map((action, i) => !action ? 0 : parts[i].kind === 'cart' && !walking ? 1
+    : neutral && !isCompanion(parts[i]) ? poseFrameCount(action) : action.frames.length);
   // Movement and combat follow the body frame clock. Per-accessory delays can
   // differ even for matching walking poses; playing those independently makes
   // hats and hair lag behind the body's movement.
-  if (!neutral) return { count: counts[body], delay: durations[body], durations, counts };
+  if (!neutral) {
+    const timing = { count: counts[body], delay: durations[body], durations, counts };
+    // A walking loop may repeat complete body cycles to finish the independent
+    // companion animation. Use integer microseconds to tolerate ACT float delays.
+    // Unusually incompatible clocks retain the original body loop and sample
+    // companions at its frames instead of rejecting an otherwise valid sprite.
+    const companions = parts.map((part, i) => isCompanion(part) && counts[i] > 1 ? i : -1).filter(i => i >= 0);
+    if (walking && companions.length) {
+      const clocks = [body, ...companions], ticks = durations.map(delay => Math.round(delay * 1000));
+      const step = clocks.map(i => ticks[i]).reduce(gcd);
+      let cycle = counts[body] * ticks[body];
+      for (const i of companions) cycle = lcm(cycle, counts[i] * ticks[i]);
+      if (Number.isSafeInteger(cycle) && cycle / step <= 600 && cycle <= 120000000) {
+        return { ...timing, count: cycle / step, delay: step / 1000, bodyClock: true };
+      }
+    }
+    return timing;
+  }
   const animated = counts.map((count, i) => count > 1 ? i : -1).filter(i => i >= 0);
   if (!animated.length) return { count: 1, delay: durations[body], durations, counts };
   const delay = animated.map(i => durations[i]).reduce(gcd);
@@ -114,15 +140,29 @@ function timeline(actions, body, neutral) {
 function layerOrder(parts, direction) {
   const index = kind => parts.map((part, i) => part.kind === kind ? i : -1).filter(i => i >= 0);
   const body = index('body'), head = index('head');
-  const gear = parts.map((part, i) => !['body', 'head', 'garment'].includes(part.kind) ? i : -1).filter(i => i >= 0);
+  const gear = parts.map((part, i) => !['body', 'head', 'garment'].includes(part.kind) && !isCompanion(part) ? i : -1).filter(i => i >= 0);
   // Lower accessories first, then middle, then top; costume precedence is
   // resolved by the editor before passing the visible parts here.
   const weight = { lower: 0, costumeLower: 0, mid: 1, costumeMid: 1, top: 2, costumeTop: 2 };
   gear.sort((a, b) => (weight[parts[a].kind] ?? 1) - (weight[parts[b].kind] ?? 1));
   const garments = index('garment');
-  if (direction < 3 || direction > 5) return [...garments, ...body, ...head, ...gear];
   const normal = garments.filter(i => !parts[i].topLayer), top = garments.filter(i => parts[i].topLayer);
-  return [...body, ...normal, ...head, ...gear, ...top];
+  const character = direction < 3 || direction > 5 ? [...garments, ...body, ...head, ...gear] : [...body, ...normal, ...head, ...gear, ...top];
+  const carts = index('cart');
+  // A trailing cart is nearer the viewer when the owner faces north.
+  return direction > 2 && direction < 6 ? [...character, ...carts, ...index('falcon')]
+    : [...carts, ...character, ...index('falcon')];
+}
+function companionOffset(part, direction, mounted) {
+  // Flat NPC composition has no map camera or follow path. Use a fixed 2:1
+  // ground projection of the client's one-cell cart following distance (35
+  // sprite pixels per world unit), widened to 1.6 cells for mounted characters.
+  // Center birds above the owner, leaving room between the full wing loop and
+  // the head. Keep their flight position independent of player head anchors.
+  if (part.kind === 'falcon') return { x: 0, y: -130 };
+  if (part.kind !== 'cart') return { x: 0, y: 0 };
+  const angle = direction * Math.PI / 4, distance = mounted ? 1.6 : 1;
+  return { x: Math.round(Math.sin(angle) * 35 * distance), y: Math.round(-Math.cos(angle) * 18 * distance) };
 }
 export function measureFrames(parts, frames, padding = 2) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -161,21 +201,24 @@ export function composeAction(parts, { actionIndex, allowEmpty = false } = {}) {
     if (!allowEmpty) throw new Error(`${definition.label} has no ${DIRECTIONS[direction]} frames in this job sprite.`);
     return { ...base, frames: [], delay: Math.max(1, sourceBody?.delay || 96), bounds: blankBounds, empty: true, warnings: [] };
   }
-  const actions = parts.map(part => part.act?.actions[actionIndex]?.frames?.length ? part.act.actions[actionIndex] : null);
+  const actions = parts.map(part => sourceAction(part, actionIndex));
   const neutral = definition.id === 'idle' || definition.id === 'sit';
-  const timing = timeline(actions, body, neutral);
+  const timing = timeline(parts, actions, body, neutral, definition.id === 'walk');
   let composedLayers = 0;
   const frames = Array.from({ length: timing.count }, (_, frame) => {
-    const indices = actions.map((_, i) => !timing.counts[i] ? -1 : neutral
-      ? Math.floor(frame * timing.delay / timing.durations[i]) % timing.counts[i]
-      : definition.id === 'walk' ? frame % timing.counts[i] : Math.min(frame, timing.counts[i] - 1));
+    const elapsed = frame * timing.delay;
+    const bodyFrame = timing.bodyClock ? Math.floor((elapsed + 0.00001) / timing.durations[body]) : frame;
+    const indices = actions.map((_, i) => !timing.counts[i] ? -1 : neutral || isCompanion(parts[i])
+      ? Math.floor((elapsed + 0.00001) / timing.durations[i]) % timing.counts[i]
+      : definition.id === 'walk' ? bodyFrame % timing.counts[i] : Math.min(bodyFrame, timing.counts[i] - 1));
     const bodyAnchor = actions[body].anchors?.[indices[body]]?.[0];
     return actions.map((partAction, i) => {
       if (!partAction) return [];
       const source = partAction.anchors?.[indices[i]]?.[0];
-      const attached = parts[i].kind !== 'body' && parts[i].kind !== 'garment';
-      const dx = attached && source && bodyAnchor ? bodyAnchor.x - source.x : 0;
-      const dy = attached && source && bodyAnchor ? bodyAnchor.y - source.y : 0;
+      const attached = parts[i].kind !== 'body' && parts[i].kind !== 'garment' && !isCompanion(parts[i]);
+      const offset = companionOffset(parts[i], direction, parts[body].companionMounted);
+      const dx = attached && source && bodyAnchor ? bodyAnchor.x - source.x : offset.x;
+      const dy = attached && source && bodyAnchor ? bodyAnchor.y - source.y : offset.y;
       const layers = partAction.frames[indices[i]]
         .filter(layer => !attached || parts[i].kind === 'head' || !hiddenMarker(parts[i].spr, layer));
       composedLayers += layers.length;
@@ -234,7 +277,7 @@ export function drawComposition(canvas, composition, { frameIndex = 0, scale = 3
 }
 export function drawPartThumbnail(canvas, part, { direction = 0, action = 'idle', size = 64 } = {}) {
   const base = actionBase(action);
-  const source = base === null ? null : part.act.actions[base + direction];
+  const source = base === null ? null : sourceAction(part, base + direction);
   if (!source?.frames.length) throw new Error('This preview direction is unavailable.');
   const frame = source.frames[0].filter(layer => !hiddenMarker(part.spr, layer));
   const bounds = measureFrames([part], [[frame]]);

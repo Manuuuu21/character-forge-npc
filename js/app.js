@@ -1,6 +1,8 @@
 import { openCharacterArchive, loadPair, resolveItemPair, closeCatalog } from './catalog.js';
 import { createPart, composeCharacter, drawComposition, drawPartThumbnail, enumerateActions } from './sprite-engine.js';
 import { exportNpc } from './export-npc.js';
+import { availablePalettes, loadPalette, withPalette } from './palettes.js';
+import { availableCompanions, supportsCompanion, companionMounted } from './companions.js';
 
 const $ = id => document.getElementById(id);
 const SLOTS = [
@@ -10,8 +12,8 @@ const SLOTS = [
 ];
 const DIRECTIONS = ['Front', 'Front left', 'Left', 'Back left', 'Back', 'Back right', 'Right', 'Front right'];
 const PAGE_SIZE = 24;
-const state = { catalog: null, job: null, head: null, gender: 'male', action: 'idle', direction: 0, zoom: 3,
-  slot: 'top', loadout: {}, page: 0, parts: [], actions: [], composition: null, playing: !matchMedia('(prefers-reduced-motion: reduce)').matches,
+const state = { catalog: null, job: null, head: null, gender: 'male', hairColor: '', jobColor: '', action: 'idle', direction: 0, zoom: 2,
+  slot: 'top', loadout: {}, companions: { falcon: '', cart: '' }, page: 0, parts: [], actions: [], composition: null, playing: !matchMedia('(prefers-reduced-motion: reduce)').matches,
   frame: 0, lastFrame: 0, generation: 0, itemGeneration: 0, importing: false, exporting: false };
 let pairCache = new Map();
 let thumbnailObserver;
@@ -62,6 +64,8 @@ async function importFile(file) {
     state.gender = catalog.jobs.some(job => job.genders?.male) ? 'male' : 'female';
     state.job = catalog.jobs.find(job => /^(novice|초보자)$/i.test(job.name) && job.genders?.[state.gender]) || catalog.jobs.find(job => job.genders?.[state.gender]);
     state.loadout = {};
+    state.companions = { falcon: '', cart: '' };
+    state.hairColor = ''; state.jobColor = '';
     state.action = 'idle';
     state.direction = 0;
     state.page = 0;
@@ -112,11 +116,16 @@ function renderJobs() {
     button.type = 'button'; button.setAttribute('aria-pressed', job === state.job);
     button.title = `${job.name}\n${job.resource || ''}`;
     button.append(node('span', 'job-glyph', (job.name || '?').slice(0, 1)), node('span', 'job-label', job.name), node('small', '', String(job.jobId ?? '')));
-    button.onclick = () => { state.job = job; renderJobs(); renderHeads(); renderItems(); updatePreview(); };
+    button.onclick = () => { state.job = job; pruneUnavailableEquipment(); renderJobs(); renderHeads(); renderTabs(); renderLoadout(); renderItems(); updatePreview(); };
     list.append(button);
   }
 }
 function renderHeads() {
+  if (state.job.hasBuiltInHead) {
+    $('head-select').replaceChildren(new Option('Built into job sprite', ''));
+    $('head-select').disabled = true;
+    return;
+  }
   const heads = (state.catalog.heads || []).filter(head => head.genders?.[state.gender] && (!head.species || !state.job.species || head.species === state.job.species));
   if (!heads.includes(state.head)) state.head = heads.find(head => Number(head.id) === 1) || heads[0] || null;
   $('head-select').replaceChildren();
@@ -131,23 +140,81 @@ function renderHeads() {
 
 function pairFor(record) {
   if (!record) return null;
+  if (record.kind === 'falcon' || record.kind === 'cart') return record.pair;
   // Catalogs may carry robe ACT variants for each job; use the selected body resource.
   if (record.kind) return resolveItemPair(record, state.job, state.gender);
   return record.genders?.[state.gender] || null;
 }
+function colorOptions(kind) {
+  return availablePalettes(state.catalog?.palettes, kind === 'head' ? visibleHead() : state.job, state.gender, kind);
+}
+function visibleHead() { return state.job?.hasBuiltInHead ? null : state.head; }
+function selectedCompanion(kind) {
+  return availableCompanions(state.catalog, state.job, kind).find(record => record.id === state.companions[kind]) || null;
+}
+function renderCompanions() {
+  for (const kind of ['falcon', 'cart']) {
+    const options = availableCompanions(state.catalog, state.job, kind);
+    const eligible = supportsCompanion(state.job, kind);
+    const select = $(kind + '-select');
+    select.replaceChildren(new Option('None', ''));
+    for (const record of options) select.append(new Option(record.name, record.id));
+    select.value = selectedCompanion(kind)?.id || '';
+    select.disabled = !options.length;
+    $(kind + '-note').textContent = !eligible
+      ? (kind === 'falcon' ? 'Hunter, Sniper, Ranger and Windhawk only.' : 'Available for jobs that use a cart.')
+      : !options.length ? 'No matching companion sprites in this archive.'
+      : kind === 'falcon' ? 'Uses this job’s bird sprite.' : `${options.length} cart types in this archive.`;
+  }
+}
+function renderPalettes(parts = []) {
+  for (const [kind, field, id] of [['head', 'hairColor', 'hair-color'], ['body', 'jobColor', 'job-color']]) {
+    const record = kind === 'head' ? visibleHead() : state.job;
+    const part = parts.find(part => part.kind === kind);
+    const indexed = !part || part.spr.indexedCount > 0;
+    const options = indexed ? colorOptions(kind) : [];
+    if (!options.some(option => option.id === state[field])) state[field] = '';
+    const select = $(id);
+    select.replaceChildren(new Option('Original', ''));
+    for (const palette of options) {
+      const option = new Option(palette.label, palette.id);
+      option.title = palette.path;
+      select.append(option);
+    }
+    select.value = state[field];
+    select.disabled = !record || !options.length;
+    $(id + '-note').textContent = !record ? (state.job?.hasBuiltInHead ? 'Head is included in the job sprite.' : 'No separate hair sprite.') : !indexed ? 'This sprite uses fixed colors.' : options.length
+      ? `${options.length} palette${options.length === 1 ? '' : 's'} in this archive`
+      : 'No matching palettes in this archive.';
+  }
+}
 async function parsed(record, kind) {
+  const catalog = state.catalog;
+  const paletteId = kind === 'body' ? state.jobColor : kind === 'head' ? state.hairColor : '';
+  const paletteOption = paletteId ? colorOptions(kind).find(option => option.id === paletteId) : null;
   const pair = pairFor(record);
   if (!pair) throw new Error(`${record?.name || kind} has no ${state.gender} sprite for this job.`);
   let pending = pairCache.get(pair);
   if (!pending) {
-    pending = loadPair(state.catalog, pair).then(bytes => createPart(bytes.spr, bytes.act));
+    pending = loadPair(catalog, pair).then(bytes => createPart(bytes.spr, bytes.act));
     pairCache.set(pair, pending);
     if (pairCache.size > 64) pairCache.delete(pairCache.keys().next().value);
     pending.catch(() => pairCache.delete(pair));
   }
-  return { ...await pending, kind, id: record.id, name: record.name, resource: record.resource, topLayer: !!record.topLayer };
+  const part = { ...await pending, kind, id: record.id, name: record.name, resource: record.resource, topLayer: !!record.topLayer,
+    companionMounted: kind === 'body' && companionMounted(record) };
+  if (!paletteOption || !part.spr.indexedCount) return part;
+  try {
+    return withPalette(part, await loadPalette(catalog, paletteOption), { id: paletteOption.id, color: paletteOption.color, path: paletteOption.path });
+  } catch (error) { throw new Error(`${kind === 'head' ? 'Hair' : 'Job'} color: ${error.message} Select Original to use the sprite's built-in colors.`); }
+}
+function equipmentAllowed() { return !state.job?.hasBuiltInHead; }
+function pruneUnavailableEquipment() {
+  if (!equipmentAllowed()) return;
+  for (const slot of Object.keys(state.loadout)) if (!pairFor(state.loadout[slot])) delete state.loadout[slot];
 }
 function visibleEquipment() {
+  if (!equipmentAllowed()) return [];
   const entries = [];
   for (const [normal, costume] of [['top', 'costumeTop'], ['mid', 'costumeMid'], ['lower', 'costumeLower']]) {
     if (state.loadout[costume]) entries.push([costume, state.loadout[costume]]);
@@ -163,6 +230,8 @@ function visibleEquipment() {
 }
 async function updatePreview() {
   const generation = ++state.generation;
+  renderPalettes();
+  renderCompanions();
   state.composition = null; state.parts = []; state.actions = []; state.frame = 0;
   $('action-select').disabled = true;
   $('export-button').disabled = true;
@@ -171,11 +240,16 @@ async function updatePreview() {
   say();
   try {
     const requests = [parsed(state.job, 'body')];
-    if (state.head) requests.push(parsed(state.head, 'head'));
+    if (visibleHead()) requests.push(parsed(visibleHead(), 'head'));
     for (const [slot, item] of visibleEquipment()) requests.push(parsed(item, slot));
+    for (const kind of ['falcon', 'cart']) {
+      const companion = selectedCompanion(kind);
+      if (companion) requests.push(parsed(companion, kind));
+    }
     const parts = await Promise.all(requests);
     if (generation !== state.generation || !state.catalog) return;
     state.parts = parts;
+    renderPalettes(parts);
     state.actions = enumerateActions(parts);
     renderActions();
     renderComposition();
@@ -258,17 +332,20 @@ function renderTabs() {
   for (const [id, label] of SLOTS) {
     const button = node('button', 'slot-tab' + (state.slot === id ? ' selected' : ''), label);
     button.setAttribute('aria-pressed', state.slot === id);
+    button.disabled = !equipmentAllowed();
     button.onclick = () => { state.slot = id; state.page = 0; renderTabs(); renderItems(); };
     $('slot-tabs').append(button);
   }
 }
 function renderLoadout() {
+  const allowed = equipmentAllowed();
   $('loadout-list').replaceChildren();
   for (const [slot, label, short] of SLOTS) {
-    const item = state.loadout[slot];
+    const item = allowed ? state.loadout[slot] : null;
     const row = node('div', 'loadout-row' + (item ? ' equipped' : ''));
     const text = node('button', 'loadout-text');
-    text.append(node('strong', '', label), node('span', '', item ? item.name : 'Nothing equipped'));
+    text.append(node('strong', '', label), node('span', '', !allowed ? 'Unavailable for this job' : item ? item.name : 'Nothing equipped'));
+    text.disabled = !allowed;
     text.title = item ? item.name : label;
     text.onclick = () => { state.slot = slot; state.page = 0; renderTabs(); renderItems(); };
     row.append(node('span', 'slot-indicator', short), text);
@@ -280,7 +357,9 @@ function renderLoadout() {
     }
     $('loadout-list').append(row);
   }
-  $('clear-loadout').disabled = !Object.keys(state.loadout).length;
+  $('clear-loadout').disabled = !allowed || !Object.keys(state.loadout).length;
+  $('loadout-hint').textContent = allowed ? 'Costume pieces replace their matching headgear in the preview.'
+    : 'This job does not display equipment. Your selections return when you switch to a job that supports it.';
 }
 function slotMatches(item) {
   if (state.slot === 'garment') return item.kind === 'garment';
@@ -295,6 +374,18 @@ function renderItems() {
   if (!state.catalog) return;
   const generation = ++state.itemGeneration;
   thumbnailObserver?.disconnect();
+  const allowed = equipmentAllowed();
+  $('item-search').disabled = !allowed;
+  if (!allowed) {
+    state.page = 0;
+    $('item-count').textContent = 'Equipment disabled';
+    $('slot-help').textContent = 'This job does not display equipped items';
+    $('page-info').textContent = 'Unavailable for this job';
+    $('previous-page').disabled = true;
+    $('next-page').disabled = true;
+    $('item-grid').replaceChildren(node('div', 'empty-state', 'Werewolf and Wereraptor do not display equipment. Choose another job to select items.'));
+    return;
+  }
   const search = $('item-search').value.trim().toLowerCase();
   const all = state.catalog.items.filter(item => slotMatches(item) && pairFor(item) && `${item.name} ${item.id ?? ''} ${item.viewId ?? ''} ${item.resource ?? ''}`.toLowerCase().includes(search));
   const pages = Math.max(1, Math.ceil(all.length / PAGE_SIZE));
@@ -340,6 +431,7 @@ function renderItems() {
     const label = node('span', 'item-label'); label.append(node('strong', '', item.name), node('small', '', idLabel));
     card.append(art, label);
     card.onclick = () => {
+      if (!equipmentAllowed()) return;
       if (state.loadout[state.slot] === item) delete state.loadout[state.slot];
       else state.loadout[state.slot] = item;
       renderLoadout(); renderItems(); updatePreview();
@@ -349,7 +441,7 @@ function renderItems() {
 }
 function renderReport(file) {
   const content = $('report-content'); content.replaceChildren();
-  content.append(node('p', '', `${file.name} · ${(file.size / 1024 ** 3).toFixed(2)} GB · ${state.catalog.jobs.length} jobs · ${state.catalog.heads?.length || 0} hairstyles · ${state.catalog.items.length.toLocaleString()} equipment entries.`));
+  content.append(node('p', '', `${file.name} · ${(file.size / 1024 ** 3).toFixed(2)} GB · ${state.catalog.jobs.length} jobs · ${state.catalog.heads?.length || 0} hairstyles · ${state.catalog.items.length.toLocaleString()} equipment entries · ${(state.catalog.palettes?.count || 0).toLocaleString()} color palettes.`));
   content.append(node('p', '', 'The archive stays on this device and is read as needed. Reloading the page requires selecting it again. Items without a known equip position can be placed in a headgear slot manually. Item IDs and view IDs are different; both can be searched when the archive supplies their mapping.'));
   const problems = state.catalog.problems || [];
   if (problems.length) {
@@ -433,8 +525,12 @@ async function downloadExport(event) {
   try {
     const result = await exportNpc(state.parts, { name: $('export-name').value, actionIds, metadata: {
       archive: $('archive-name').textContent, job: state.job.name, jobId: state.job.jobId, jobResource: state.job.resource, gender: state.gender,
-      hairstyle: state.head?.id ?? null,
-      equipment: Object.fromEntries(Object.entries(state.loadout).map(([slot, item]) => [slot, { id: item.id, viewId: item.viewId, name: item.name }])),
+      hairstyle: visibleHead()?.id ?? null,
+      hairColor: state.parts.find(part => part.kind === 'head')?.palette ?? null,
+      jobColor: state.parts.find(part => part.kind === 'body')?.palette ?? null,
+      equipment: Object.fromEntries((equipmentAllowed() ? Object.entries(state.loadout) : []).map(([slot, item]) => [slot, { id: item.id, viewId: item.viewId, name: item.name }])),
+      companions: Object.fromEntries(state.parts.filter(part => part.kind === 'falcon' || part.kind === 'cart')
+        .map(part => [part.kind, { id: part.id, name: part.name, resource: part.resource }])),
     } }, value => { $('export-status').textContent = progressText(value); });
     const url = URL.createObjectURL(result.blob);
     const link = node('a'); link.href = url; link.download = result.filename; document.body.append(link); link.click(); link.remove();
@@ -462,16 +558,24 @@ $('change-archive').onclick = () => {
   state.generation++; state.itemGeneration++; thumbnailObserver?.disconnect();
   closeCatalog(state.catalog); state.catalog = null; state.parts = []; state.actions = []; state.composition = null; pairCache = new Map();
   state.job = null; state.head = null; state.loadout = {};
+  state.companions = { falcon: '', cart: '' };
   $('editor-screen').hidden = true; $('import-screen').hidden = false; $('import-error').hidden = true;
   window.scrollTo({ top: 0 }); $('choose-file').focus();
 };
 $('job-search').oninput = renderJobs;
+$('hair-color').onchange = () => { state.hairColor = $('hair-color').value; updatePreview(); };
+$('job-color').onchange = () => { state.jobColor = $('job-color').value; updatePreview(); };
+for (const kind of ['falcon', 'cart']) $(kind + '-select').onchange = () => {
+  if (!supportsCompanion(state.job, kind)) return;
+  state.companions[kind] = $(kind + '-select').value;
+  updatePreview();
+};
 $('item-search').oninput = () => { state.page = 0; renderItems(); };
 document.querySelectorAll('[data-gender]').forEach(button => button.onclick = () => {
   state.gender = button.dataset.gender;
   if (!state.job.genders?.[state.gender]) state.job = state.catalog.jobs.find(job => job.genders?.[state.gender]);
-  for (const slot of Object.keys(state.loadout)) if (!pairFor(state.loadout[slot])) delete state.loadout[slot];
-  renderGenders(); renderJobs(); renderHeads(); renderItems(); renderLoadout(); updatePreview();
+  pruneUnavailableEquipment();
+  renderGenders(); renderJobs(); renderHeads(); renderTabs(); renderItems(); renderLoadout(); updatePreview();
 });
 $('action-select').onchange = () => {
   state.action = $('action-select').value;

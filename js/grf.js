@@ -1,5 +1,6 @@
 import { decodeFull, decodeHeader } from './vendor/grf-des.js';
 import { decodeArchiveKeys, decodeProtectedEntry } from './grf-protected.js';
+import { kroKeyCandidates } from './grf-kro-keys.js';
 
 const HEADER_SIZE = 46;
 export const OUTPUT_FOLDERS = ['cardbmp', 'collection', 'item', 'map', 'monster', 'sprite'];
@@ -84,10 +85,15 @@ export async function openGrf(file, encoding = 'windows-1252', selectEntry = grf
   const table = await inflateGrf(await read(file, tableOffset + tableHeaderSize, compressedSize), size, GRF_LIMITS.table);
   const data = new DataView(table.buffer), decoder = new TextDecoder(encoding, { fatal: true });
   const entries = [], problems = [];
-  let keys = new Map(), keyError;
+  let keys = new Map(), keyError, keyCandidates = null;
   if (keySize) {
-    try { keys = await decodeArchiveKeys(await read(file, tableOffset + tableHeaderSize + compressedSize, keySize)); }
-    catch (error) { keyError = error.message; problems.push(`Archive encryption keys: ${keyError}`); }
+    const rawKeys = await read(file, tableOffset + tableHeaderSize + compressedSize, keySize);
+    try { keys = await decodeArchiveKeys(rawKeys); }
+    catch (error) {
+      keyError = error.message;
+      keyCandidates = kroKeyCandidates(rawKeys);
+      problems.push(`Archive encryption keys: ${keyError}${keyCandidates ? ' Standard kRO key candidates are available; each protected resource is accepted only after its checksum is verified.' : ''}`);
+    }
   }
   let offset = 0;
   for (let i = 0; i < count; i++) {
@@ -113,12 +119,17 @@ export async function openGrf(file, encoding = 'windows-1252', selectEntry = grf
     } catch (error) { problems.push(`${path}: ${error.message}`); }
   }
   if (offset !== table.length) throw new Error('GRF file table length does not match its entry count.');
-  return { file, entries, problems, count, encoding, version, keys, keyError };
+  return { file, entries, problems, count, encoding, version, keys, keyError, keyCandidates };
 }
 
 export async function readGrfEntry(archive, entry) {
   const bytes = await read(archive.file, entry.offset, entry.alignedSize);
-  if (entry.flags === 0x80) return decodeProtectedEntry(bytes, entry.rawName, entry.size, archive.keys, GRF_LIMITS.asset, inflateGrf);
+  if (entry.flags === 0x80) {
+    // A supplied key always wins, including when it is wrong: a checksum failure
+    // must never trigger an unannounced retry with different key material.
+    const keys = archive.keyCandidates ? new Map([...archive.keyCandidates, ...archive.keys]) : archive.keys;
+    return decodeProtectedEntry(bytes, entry.rawName, entry.size, keys, GRF_LIMITS.asset, inflateGrf);
+  }
   if (entry.flags & 2) decodeFull(bytes, bytes.length, entry.compressedSize);
   else if (entry.flags & 4) decodeHeader(bytes, bytes.length);
   return inflateGrf(bytes.subarray(0, entry.compressedSize), entry.size, GRF_LIMITS.asset);

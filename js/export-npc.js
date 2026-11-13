@@ -216,8 +216,9 @@ Each group uses the direction order: ${DIRECTIONS.join(', ')}.
 ACTION GROUPS
 ${groups}
 
-SPR 2.0 stores true-color images; ACT 2.5 preserves composed layer offsets, mirroring, rotation, scale, tint and timing. Player sound events are removed.
+SPR 2.0 stores true-color images, including the selected hair and job palettes; no separate PAL files are needed. ACT 2.5 preserves composed layer offsets, mirroring, rotation, scale, tint and timing. Player sound events are removed.
 Idle/sit head-look variants use the neutral look; accessories retain their neutral-look animation. Other actions follow the selected body's frame sequence.
+Selected bird/cart companions are included in the artwork and metadata. Birds hover; carts roll during walking and idle during other poses. These are visual parts of this NPC, not separate followers, skills, or cart inventories.
 ${warnings}
 INSTALLATION
 Copy both files into your client sprite resource directory (or pack that path into your GRF), then register the sprite name and an unused view ID in the matching client identity/name tables and server configuration. Paths and IDs depend on your client/server version.
@@ -253,7 +254,7 @@ export async function exportNpc(parts, { name = 'custom_npc', metadata = {}, act
     frames: binary.actions.map(action => action.frames.length), delaysMs: binary.actions.map(action => action.delay),
     emptyActionIndices: binary.actions.flatMap((action, index) => action.frames.length ? [] : [index]),
     warnings: binary.warnings,
-    parts: parts.map(part => ({ kind: part.kind, id: part.id, name: part.name, resource: part.resource })),
+    parts: parts.map(part => ({ kind: part.kind, id: part.id, name: part.name, resource: part.resource, palette: part.palette ?? null })),
     spriteSheets: [],
   };
   const files = [{ name: `${basename}.spr`, bytes: binary.spr }, { name: `${basename}.act`, bytes: binary.act }];

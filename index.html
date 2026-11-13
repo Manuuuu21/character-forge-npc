@@ -52,6 +52,10 @@
         <div class="gender-switch" aria-label="Character gender"><button data-gender="male" class="selected" aria-pressed="true">Male</button><button data-gender="female" aria-pressed="false">Female</button></div>
         <div id="job-list" class="job-list" aria-label="Jobs"></div>
         <div class="hair-field"><label for="head-select">Hair style</label><select id="head-select"></select></div>
+        <div class="palette-fields" aria-label="Character colors">
+          <div class="color-field"><label for="hair-color">Hair color</label><select id="hair-color" aria-describedby="hair-color-note"><option value="">Original</option></select><small id="hair-color-note"></small></div>
+          <div class="color-field"><label for="job-color">Job color</label><select id="job-color" aria-describedby="job-color-note"><option value="">Original</option></select><small id="job-color-note"></small></div>
+        </div>
       </section>
       <section class="panel viewer-panel" aria-labelledby="viewer-title">
         <div class="panel-heading"><div class="viewer-title"><h2 id="viewer-title">Sprite preview</h2><span class="live-dot" title="Rendered from your archive"></span></div><div class="action-control"><label for="action-select">Action</label><select id="action-select" disabled><option value="idle">Idle</option></select></div></div>
@@ -61,11 +65,20 @@
           <canvas id="sprite-canvas" width="1" height="1" role="img" aria-label="Character sprite preview"></canvas>
           <div id="preview-message" class="preview-message" role="status">Choose a job to begin</div>
           <div class="stage-name"><strong id="character-name">Character</strong><span id="character-details">Male · Idle · Front</span></div>
-          <div class="zoom-control"><button id="zoom-out" aria-label="Zoom out">−</button><span id="zoom-value">3×</span><button id="zoom-in" aria-label="Zoom in">+</button></div>
+          <div class="zoom-control"><button id="zoom-out" aria-label="Zoom out">−</button><span id="zoom-value">2×</span><button id="zoom-in" aria-label="Zoom in">+</button></div>
         </div>
         <div class="viewer-toolbar"><div class="rotation-controls"><button id="rotate-left" class="icon-button" aria-label="Rotate left"><svg class="flip"><use href="#i-chevron"/></svg></button><label for="direction" class="sr-only">Facing direction</label><select id="direction"><option value="0">Front</option><option value="1">Front left</option><option value="2">Left</option><option value="3">Back left</option><option value="4">Back</option><option value="5">Back right</option><option value="6">Right</option><option value="7">Front right</option></select><button id="rotate-right" class="icon-button" aria-label="Rotate right"><svg><use href="#i-chevron"/></svg></button></div><div class="playback"><button id="play-toggle" class="text-button" aria-label="Pause animation">Ⅱ <span>Pause</span></button><span id="frame-info">Frame 1 / 1</span></div><label class="grid-control"><input id="grid-toggle" type="checkbox" checked> Grid</label></div>
       </section>
-      <aside class="panel loadout-panel" aria-labelledby="loadout-title"><div class="panel-heading"><h2 id="loadout-title">Your loadout</h2><button id="clear-loadout" class="icon-button" aria-label="Clear equipment" title="Clear equipment"><svg><use href="#i-reset"/></svg></button></div><div id="loadout-list"></div><div class="loadout-note"><span>✦</span><p>Costume pieces replace their matching headgear in the preview.</p></div><div class="export-note"><strong>Every action. Every direction.</strong><span>Export the job's full animation set in one SPR + ACT pair.</span></div></aside>
+      <aside class="panel loadout-panel" aria-labelledby="loadout-title">
+        <div class="panel-heading"><h2 id="loadout-title">Your loadout</h2><button id="clear-loadout" class="icon-button" aria-label="Clear equipment" title="Clear equipment"><svg><use href="#i-reset"/></svg></button></div>
+        <div id="loadout-list"></div>
+        <div class="loadout-note"><span>✦</span><p id="loadout-hint">Costume pieces replace their matching headgear in the preview.</p></div>
+        <fieldset class="companion-fields"><legend>Job companions</legend>
+          <div class="companion-field"><label for="falcon-select">Falcon / bird</label><select id="falcon-select" aria-describedby="falcon-note" disabled><option value="">None</option></select><small id="falcon-note">Hunter, Sniper, Ranger and Windhawk only.</small></div>
+          <div class="companion-field"><label for="cart-select">Cart type</label><select id="cart-select" aria-describedby="cart-note" disabled><option value="">None</option></select><small id="cart-note">Available for jobs that use a cart.</small></div>
+        </fieldset>
+        <div class="export-note"><strong>Every action. Every direction.</strong><span>Export the job's full animation set in one SPR + ACT pair.</span></div>
+      </aside>
     </div>
     <section class="panel equipment-panel" aria-labelledby="equipment-title">
       <div class="equipment-heading"><div><h2 id="equipment-title">The finishing touches</h2><p>Choose a slot, then add a piece to your character.</p></div><label class="search-field"><svg><use href="#i-search"/></svg><input id="item-search" type="search" placeholder="Search by name, item ID or view ID…" aria-label="Search equipment by name or ID"></label></div>

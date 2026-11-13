@@ -4,6 +4,8 @@ import { parseLuaTable } from './lua.js';
 import { readAccessoryTable } from './accessory-tables.js';
 import { readGarmentTables } from './garment-tables.js';
 import { readLiteralLub } from './literal-lub.js';
+import { indexPalettes } from './palettes.js';
+import { indexCompanions } from './companions.js';
 
 const key = value => legacyLuaText(String(value)).replaceAll('\\', '/').normalize('NFC').toLowerCase();
 const western = new TextDecoder('windows-1252');
@@ -35,6 +37,7 @@ function jobLabel(resource) {
 }
 function selectEntry(path) {
   return /^data\/sprite\//i.test(path) && /\.(act|spr)$/i.test(path)
+    || /^data\/palette\//i.test(path) && /\.pal$/i.test(path)
     || /\/(?:accessoryid|accname|spriterobeid|spriterobename|iteminfo|jobidentity|pcjobname)\.(?:lua|lub)$/i.test(path)
     || /\/idnum2item(?:displayname|resname|desc)table\.txt$/i.test(path)
     || /^data\/texture\//i.test(path) && /\/item\/[^/]+\.(bmp|png)$/i.test(path) ? {} : null;
@@ -73,6 +76,8 @@ export async function openCharacterArchive(file,{encoding='windows-1252',onProgr
     const basename=resource.split('/').pop(),[name,jobId]=jobLabel(basename);
     const variant=resource.includes('/')?resource.split('/')[0]:null;
     let record=map.get(id); if(!record){record={id,name:part==='몸통'?name+(variant?` · ${variant.replaceAll('_',' ')}`:''):`Style ${basename}`,jobId,resource:basename,variant,species:race==='도람족'?'doram':'human',genders:{}};map.set(id,record);}
+    // These transformations contain their own complete head in the body SPR.
+    record.hasBuiltInHead=part==='몸통'&&/^(?:werewolf|wereraptor)[23]?$/i.test(basename);
     record.genders[gender]=pair;
   }
   const jobs=[...jobMap.values()].sort((a,b)=>Number(b.jobId===0)-Number(a.jobId===0)||Number(!!a.variant)-Number(!!b.variant)||a.name.localeCompare(b.name,undefined,{numeric:true}));
@@ -142,9 +147,11 @@ export async function openCharacterArchive(file,{encoding='windows-1252',onProgr
   }
   for(const [mapKey,base]of equipment){if(used.has(mapKey))continue;items.push({...base,id:`view-${base.kind}-${base.viewId??base.resource}`,name:displayText(base.resource).replaceAll('_',' ').trim(),costume:null,slots:base.kind==='garment'?['garment']:['top','mid','lower'],slotKnown:base.kind==='garment',description:'No itemInfo record is available for this sprite. Search or equip it by resource name or view ID. Choose its equipment position manually.',icon:icons.get(key(base.resource))||icons.get(key(base.resource).replace(/^_+/,''))||null});}
   items.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
-  const stats={entries:archive.count,jobs:jobs.length,heads:heads.length,items:items.length,headgears:items.filter(i=>i.kind==='headgear').length,garments:items.filter(i=>i.kind==='garment').length,version:archive.version===0x300?'3.0':'2.0'};
+  const palettes=indexPalettes(archive.entries,archive);
+  const companions=indexCompanions(archive.entries);
+  const stats={entries:archive.count,jobs:jobs.length,heads:heads.length,items:items.length,palettes:palettes.count,falcons:companions.falcons.length,carts:companions.carts.length,headgears:items.filter(i=>i.kind==='headgear').length,garments:items.filter(i=>i.kind==='garment').length,version:archive.version===0x300?'3.0':'2.0'};
   onProgress(`Ready: ${jobs.length} jobs and ${items.length} equipment sprites.`);
-  return {archive,jobs,heads,items,problems,stats,pairCache:new Map(),iconCache:new Map(),urls:new Set()};
+  return {archive,jobs,heads,items,palettes,companions,problems,stats,pairCache:new Map(),paletteCache:new Map(),iconCache:new Map(),urls:new Set()};
 }
 
 export async function loadPair(catalog,pair) {
@@ -166,4 +173,4 @@ export async function getIconUrl(catalog,item) {
   if(!catalog.iconCache.has(item.icon.path))catalog.iconCache.set(item.icon.path,readGrfEntry(catalog.archive,item.icon).then(bytes=>{if(catalog.disposed)return null;const url=URL.createObjectURL(new Blob([bytes],{type:/\.png$/i.test(item.icon.path)?'image/png':'image/bmp'}));catalog.urls.add(url);return url;}).catch(()=>null));
   return catalog.iconCache.get(item.icon.path);
 }
-export function closeCatalog(catalog) {if(!catalog)return;catalog.disposed=true;for(const url of catalog.urls)URL.revokeObjectURL(url);catalog.urls.clear();catalog.pairCache.clear();catalog.iconCache.clear();}
+export function closeCatalog(catalog) {if(!catalog)return;catalog.disposed=true;for(const url of catalog.urls)URL.revokeObjectURL(url);catalog.urls.clear();catalog.pairCache.clear();catalog.paletteCache?.clear();catalog.iconCache.clear();}
