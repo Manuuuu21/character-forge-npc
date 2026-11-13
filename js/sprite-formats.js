@@ -115,10 +115,17 @@ export function rgbaImage(spr, image) {
     const out = (y * width + x) * 4;
     if (type) {
       const src = ((height - 1 - y) * width + x) * 4;
+      // Transparent RGB can bleed into the silhouette when the client filters
+      // exported true-color sprites. Keep alpha-zero pixels fully cleared;
+      // visible and partially transparent pixels retain their straight RGB.
+      if (!data[src]) continue;
       rgba[out] = data[src + 3]; rgba[out + 1] = data[src + 2]; rgba[out + 2] = data[src + 1]; rgba[out + 3] = data[src];
     } else {
-      const index = data[y * width + x], src = index * 4;
-      rgba[out] = spr.palette[src]; rgba[out + 1] = spr.palette[src + 1]; rgba[out + 2] = spr.palette[src + 2]; rgba[out + 3] = index ? 255 : 0;
+      const index = data[y * width + x];
+      // Index zero is the transparent color key, not a visible palette color.
+      if (!index) continue;
+      const src = index * 4;
+      rgba[out] = spr.palette[src]; rgba[out + 1] = spr.palette[src + 1]; rgba[out + 2] = spr.palette[src + 2]; rgba[out + 3] = 255;
     }
   }
   return rgba;
